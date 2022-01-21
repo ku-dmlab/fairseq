@@ -27,7 +27,7 @@ from fairseq.models.speech_to_text.utils import (
     layer_norm_backward_hook,
 )
 from torch import Tensor, device as Device
-from torch.ao.quantization.qconfig import (
+from torch.quantization.qconfig import (
     default_dynamic_qconfig,
     per_channel_dynamic_qconfig,
 )

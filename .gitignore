@@ -134,3 +134,10 @@ experimental/*
 
 # Weights and Biases logs
 wandb/
+
+# Examples generated
+examples/translation
+score
+plot.png
+plot_result.py
+.vscode
