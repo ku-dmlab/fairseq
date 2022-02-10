@@ -1,10 +1,10 @@
 #!/usr/bin/env python3 -u
 import os, sys, time
 
-def run(lr=5e-5, tau=0.9, detached=False, seed=0, resume=False):
+def run(lr=5e-5, tau=0.9, detached=False, seed=0, resume=False, offline=False):
     from fairseq_cli.train import cli_main
     suffix_str = "d" if detached else "a"
-    dirname = f"/ext2/bjlee/fairseq_ckpts/{suffix_str}_{lr}_{tau}_{seed}"
+    dirname = f"/ext2/bjlee/fairseq_ckpts/{suffix_str}_{lr}_{tau}_{seed}_{offline}"
     os.makedirs(dirname, exist_ok=True)
     restore = dirname + "/checkpoint_best.pt" if resume else "/ext/bjlee/fairseq_ckpts/supervised_14deen_35.28/checkpoint_best.pt"
     args = (["data-bin/iwslt14.tokenized.de-en"]
@@ -42,6 +42,8 @@ def run(lr=5e-5, tau=0.9, detached=False, seed=0, resume=False):
     + ["--tensorboard-logdir", dirname])
     if detached:
         args = args + ["--detach-actor"]
+    if offline:
+        args = args + ["--learn-offline"]
     sys.argv = [sys.argv[0]] + args
     cli_main()
 
@@ -51,6 +53,10 @@ if __name__ == "__main__":
     pid = int(sys.argv[1])
     #print(f"sleeping {1800 * pid} sec")
     #time.sleep(1800 * pid)
-    taus = [0.7, 0.9, 0.95, 0.99]
-    for seed in range(3):
-        run(tau=taus[pid], seed=seed, resume = seed ==0)
+    #taus = [0.7, 0.9, 0.95, 0.99]
+    #for seed in range(3):
+    run(tau=0.9, offline=True)#, resume = seed ==0)
+
+    # offline 잘 작동함.
+    # 90epoch 되어야 성능이 올라감 -> learning rate를 높여야 하나?
+    # 

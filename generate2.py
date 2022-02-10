@@ -16,7 +16,7 @@ if __name__ == "__main__":
     directory = "/ext2/bjlee/fairseq_ckpts/"
     base_model_path = "/ext/bjlee/fairseq_ckpts/supervised_14deen_35.28/checkpoint_best.pt"
 
-    dirnames = ["a_5e-05_0.7_0", "a_5e-05_0.9_0", "a_5e-05_0.95_0", "a_5e-05_0.99_0"]
+    dirnames = ["a_5e-05_0.9_0_True"]
     mixture_ratios = [5.0, 1.0, 0.5, 0.25, 0.18, 0.12, 0.06, 0.03, 0]
     scores = {}
     for dirname in dirnames:
@@ -24,6 +24,7 @@ if __name__ == "__main__":
         cur_path = os.path.join(directory, dirname)
         ckpts = [f for f in os.listdir(cur_path)
                     if os.path.isfile(os.path.join(cur_path, f))]
+        print(ckpts)
         for ckpt in ckpts:
             if ".pt" not in ckpt or "last" in ckpt or "best" in ckpt:
                 continue
@@ -47,5 +48,5 @@ if __name__ == "__main__":
                 scores[dirname][ckpt][ratio] = scorer.score()
                 print("score: ", scores)
     print("score: ", scores)
-    with open("score.pkl", "wb") as handle:
+    with open("score2.pkl", "wb") as handle:
         pickle.dump(scores, handle)

@@ -26,13 +26,18 @@ class ActorCriticCriterionConfig(FairseqDataclass):
     tau: float = field(default=0.9)
     detach_actor: bool = field(default=False)
     loss_scaler: float = field(default=50.)
+    learn_offline: bool = field(default=False)
+    offline_data_path: str = field(default="")
+    additional_offline_data: float = field(default=1.0)
 
 @register_criterion(
     "actor_critic", dataclass=ActorCriticCriterionConfig
 )
 class ActorCriticCriterion(FairseqCriterion):
     def __init__(self, task, sample_beam, use_beam_while_training,
-                 use_value_for_return, use_value_for_baseline, use_clone_loss, alpha, tau, detach_actor, loss_scaler):
+                 use_value_for_return, use_value_for_baseline,
+                 use_clone_loss, alpha, tau, detach_actor, loss_scaler,
+                 learn_offline, offline_data_path, additional_offline_data):
         super().__init__(task)
         self.sample_beam = sample_beam
         self.use_beam_while_training = use_beam_while_training
@@ -44,20 +49,34 @@ class ActorCriticCriterion(FairseqCriterion):
         self.detach_actor = detach_actor
         self.loss_scaler = loss_scaler
         self.generator = None
+        self._offline_data = None
         self.vf = None
         self.vf_optimizer = None
+        self.learn_offline = learn_offline
+        self.offline_data_path = offline_data_path
+        self.additional_offline_data = additional_offline_data
 
-    def _decode(self, toks, escape_unk=False):
+    @property
+    def pad_idx(self):
+        return self.task.tgt_dict.pad()
+
+    @property
+    def eos_idx(self):
+        return self.task.tgt_dict.eos()
+
+    def _decode(self, toks, is_hyp=True):
+        if not is_hyp:
+            toks = utils.strip_pad(toks, self.pad_idx)
         s = self.task.tgt_dict.string(
             toks.int().cpu(),
             self.task.cfg.eval_bleu_remove_bpe,
-            unk_string=("UNKNOWNTOKENINREF" if escape_unk else "UNKNOWNTOKENINHYP"),
+            unk_string=("UNKNOWNTOKENINHYP" if is_hyp else "UNKNOWNTOKENINREF"),
         )
         if self.task.tokenizer:
             s = self.task.tokenizer.decode(s)
         return s
  
-    def forward(self, model, sample, reduce=True, critic_only=False):
+    def _build_generator(self, model):
         if self.generator is None:
             gen_args = Namespace(**json.loads(self.task.cfg.eval_bleu_args))
             gen_args.sample_beam = self.sample_beam
@@ -66,49 +85,89 @@ class ActorCriticCriterion(FairseqCriterion):
                 gen_args.sampling_topp = 0.5
             self.generator = self.task.build_generator([model], gen_args)
 
+    def _run_generator(self, model, base_sample):
         was_train = model.training
         model.eval()
         with torch.no_grad():
-            hypos = self.generator.generate([model], sample)
+            hypos = self.generator.generate([model], base_sample)
         if was_train:
             model.train()
-
+        return hypos
+    
+    def _get_rewards(self, hypos, targets):
         rewards = []
-        pad_idx = self.task.tgt_dict.pad()
-        eos_idx = self.task.tgt_dict.eos()
-        
-        num_hypos = len(hypos)
-        num_samples = len(hypos[0])
-        hypos = [[preds["tokens"] for preds in each] for each in hypos]
-        for hypo, rtarget in zip(hypos, sample["target"]):
+        for hypo, rtarget in zip(hypos, targets):
             rewards.append([])
-            ref = self._decode(
-                    utils.strip_pad(rtarget, pad_idx),
-                    escape_unk=True,  # don't count <unk> as matches to the hypo
-                )
+            ref = self._decode(rtarget, is_hyp=False)
+            if not isinstance(hypo, list):
+                hypo = [hypo]
             for preds in hypo:
                 hyp = self._decode(preds)
                 if self.task.cfg.eval_tokenized_bleu:
                     rewards[-1].append(sacrebleu.corpus_bleu([hyp], [[ref]], tokenize="none").score)
                 else:
                     rewards[-1].append(sacrebleu.corpus_bleu([hyp], [[ref]]).score)
+        return rewards
+
+    def get_batch(self, model, base_sample):
+        if self.learn_offline:
+            if self._offline_data is None:
+                self._generate_offline_data()
+            return self._sample_batch(model, base_sample)
+        else:
+            return self._generate_batch(model, base_sample)
+
+    def _generate_offline_data(self):
+        pass
+
+    def _sample_batch(self, model, base_sample):
+        target = base_sample["target"]
+        rewards = self._get_rewards(target, target)
+        return len(target), 1, rewards, base_sample["net_input"], target
+
+    def _generate_batch(self, model, base_sample):
+        self._build_generator(model)
+        hypos = self._run_generator(model, base_sample)
+        hypos = [[preds["tokens"] for preds in each] for each in hypos]
+        rewards = self._get_rewards(hypos, base_sample["target"])
+        # base samples:
+        #  - id
+        #  - nsentences
+        #  - ntokens
+        #  - net_input
+        # net_input:
+        #  - src_tokens
+        #  - src_lengths
+        #  - prev_output_tokens
+        #  - target
+        
+        num_hypos = len(hypos)
+        num_samples = len(hypos[0])
         
         hypos = [item for sublist in hypos for item in sublist]
-        vinputs = {"src_tokens": sample["net_input"]["src_tokens"].tile(
+        vinputs = {
+            "src_tokens": base_sample["net_input"]["src_tokens"].tile(
             1, num_samples).view(num_hypos * num_samples, -1),
-            "src_lengths": sample["net_input"]["src_lengths"][:, None].tile(
+            "src_lengths": base_sample["net_input"]["src_lengths"][:, None].tile(
                 1, num_samples).view(num_hypos * num_samples)}
-        vtargets = collate_tokens(hypos, pad_idx, eos_idx,
+        vtargets = collate_tokens(hypos, self.pad_idx, self.eos_idx,
             left_pad=self.task.cfg.left_pad_target)
         vinputs["prev_output_tokens"] = collate_tokens(
-            hypos, pad_idx, eos_idx, left_pad=self.task.cfg.left_pad_target,
+            hypos, self.pad_idx, self.eos_idx,
+            left_pad=self.task.cfg.left_pad_target,
             move_eos_to_beginning=True)
+
+        return num_hypos, num_samples, rewards, vinputs, vtargets
+
+    def forward(self, model, sample, reduce=True, critic_only=False):
+
+        num_hypos, num_samples, rewards, vinputs, vtargets = self.get_batch(model, sample)
 
         orig_output = model(**sample["net_input"])
         orig_lprobs = model.get_normalized_probs(orig_output, log_probs=True)
         orig_lprobs = orig_lprobs.view(-1, orig_lprobs.size(-1))
         target = model.get_targets(sample, orig_output).view(-1)
-        avg_clone_loss = F.nll_loss(orig_lprobs, target, ignore_index=pad_idx)
+        avg_clone_loss = F.nll_loss(orig_lprobs, target, ignore_index=self.pad_idx)
 
         out_features = model(**vinputs, features_only=True)[0]
         net_output = [model.output_layer(out_features)]
@@ -119,7 +178,7 @@ class ActorCriticCriterion(FairseqCriterion):
         lprobs = model.get_normalized_probs(net_output, log_probs=True)
         lprob = lprobs.gather(dim=-1, index=vtargets[:, :, None])
         score = lprob.view(num_hypos, num_samples, -1)
-        non_pad_mask = vtargets.ne(pad_idx).view(num_hypos, num_samples, -1)
+        non_pad_mask = vtargets.ne(self.pad_idx).view(num_hypos, num_samples, -1)
         rewards = lprob.new_tensor(rewards).view(num_hypos, num_samples, 1)
         
         residual = rewards - value
