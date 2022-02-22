@@ -6,15 +6,16 @@ def run(lr=5e-5, tau=0.9, detached=False, seed=0, resume=False, offline=False):
     suffix_str = "d" if detached else "a"
     dirname = f"/ext2/bjlee/fairseq_ckpts/{suffix_str}_{lr}_{tau}_{seed}_{offline}"
     os.makedirs(dirname, exist_ok=True)
-    restore = dirname + "/checkpoint_best.pt" if resume else "/ext/bjlee/fairseq_ckpts/supervised_14deen_35.28/checkpoint_best.pt"
+    base_model_path = "/ext/bjlee/fairseq_ckpts/supervised_14deen_35.28/checkpoint_best.pt"
+    restore = dirname + "/checkpoint_best.pt" if resume else base_model_path
     args = (["data-bin/iwslt14.tokenized.de-en"]
     + ["--restore-file", restore]
-    + ["--best-checkpoint-metric", "critic_loss"]
+    + ["--best-checkpoint-metric", "bleu"]
     + ["--tau", str(tau)]
     + ["--seed", str(seed + 12345)]
-    + ["--patience", "100"]
+    + ["--patience", "10"]
     + ["--use-beam-while-training"]
-    + ["--validate-interval-updates", "100"]
+    #+ ["--validate-interval-updates", "2"]
     + ["--arch", "transformer_iwslt_de_en"]
     + ["--share-decoder-input-output-embed"]
     + ["--reset-optimizer"]
@@ -34,9 +35,11 @@ def run(lr=5e-5, tau=0.9, detached=False, seed=0, resume=False, offline=False):
     + ["--eval-bleu-detok", "moses"]
     + ["--eval-bleu-remove-bpe"]
     + ["--eval-bleu-print-samples"]
-    #+ ["--maximize-best-checkpoint-metric"]
-    #+ ["--no-epoch-checkpoints"]
-    + ["--save-interval", "3"]
+    + ["--maximize-best-checkpoint-metric"]
+    + ["--use-critic-generator"]
+    + ["--critic-mix-ratio", "0.5"]
+    + ["--base-model-path", base_model_path]
+    + ["--no-epoch-checkpoints"]
     + ["--save-dir", dirname]
     + ["--log-file", dirname + "/log"]
     + ["--tensorboard-logdir", dirname])
@@ -48,14 +51,10 @@ def run(lr=5e-5, tau=0.9, detached=False, seed=0, resume=False, offline=False):
     cli_main()
 
 if __name__ == "__main__":
-    print(sys.argv[1])
+    sys.argv.append("0")
     os.environ["CUDA_VISIBLE_DEVICES"] = sys.argv[1]
     pid = int(sys.argv[1])
-    #print(f"sleeping {1800 * pid} sec")
-    #time.sleep(1800 * pid)
-    #taus = [0.7, 0.9, 0.95, 0.99]
-    #for seed in range(3):
-    run(tau=0.9, offline=True)#, resume = seed ==0)
+    run(tau=0.9, offline=True)
 
     # offline 잘 작동함.
     # 90epoch 되어야 성능이 올라감 -> learning rate를 높여야 하나?

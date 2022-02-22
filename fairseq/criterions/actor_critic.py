@@ -19,13 +19,11 @@ from fairseq.data.data_utils import collate_tokens
 class ActorCriticCriterionConfig(FairseqDataclass):
     sample_beam: int = field(default=5, metadata={"help": "number of sample size"})
     use_beam_while_training: bool = field(default=False)
-    use_value_for_return: bool = field(default=False)
-    use_value_for_baseline: bool = field(default=False)
     use_clone_loss: bool = field(default=True)
     alpha: float = field(default=1.0)
     tau: float = field(default=0.9)
     detach_actor: bool = field(default=False)
-    loss_scaler: float = field(default=50.)
+    reward_scaler: float = field(default=50.)
     learn_offline: bool = field(default=False)
     offline_data_path: str = field(default="")
     additional_offline_data: float = field(default=1.0)
@@ -35,19 +33,16 @@ class ActorCriticCriterionConfig(FairseqDataclass):
 )
 class ActorCriticCriterion(FairseqCriterion):
     def __init__(self, task, sample_beam, use_beam_while_training,
-                 use_value_for_return, use_value_for_baseline,
-                 use_clone_loss, alpha, tau, detach_actor, loss_scaler,
+                 use_clone_loss, alpha, tau, detach_actor, reward_scaler,
                  learn_offline, offline_data_path, additional_offline_data):
         super().__init__(task)
         self.sample_beam = sample_beam
         self.use_beam_while_training = use_beam_while_training
-        self.use_value_for_return = use_value_for_return
-        self.use_value_for_baseline = use_value_for_baseline
         self.use_clone_loss = use_clone_loss
         self.alpha = alpha
         self.tau = tau
         self.detach_actor = detach_actor
-        self.loss_scaler = loss_scaler
+        self.reward_scaler = reward_scaler
         self.generator = None
         self._offline_data = None
         self.vf = None
@@ -130,17 +125,6 @@ class ActorCriticCriterion(FairseqCriterion):
         hypos = self._run_generator(model, base_sample)
         hypos = [[preds["tokens"] for preds in each] for each in hypos]
         rewards = self._get_rewards(hypos, base_sample["target"])
-        # base samples:
-        #  - id
-        #  - nsentences
-        #  - ntokens
-        #  - net_input
-        # net_input:
-        #  - src_tokens
-        #  - src_lengths
-        #  - prev_output_tokens
-        #  - target
-        
         num_hypos = len(hypos)
         num_samples = len(hypos[0])
         
@@ -179,12 +163,13 @@ class ActorCriticCriterion(FairseqCriterion):
         lprob = lprobs.gather(dim=-1, index=vtargets[:, :, None])
         score = lprob.view(num_hypos, num_samples, -1)
         non_pad_mask = vtargets.ne(self.pad_idx).view(num_hypos, num_samples, -1)
-        rewards = lprob.new_tensor(rewards).view(num_hypos, num_samples, 1)
+        rewards = lprob.new_tensor(rewards).view(num_hypos, num_samples, 1) / self.reward_scaler
         
         residual = rewards - value
         actor_loss = - (score * residual.detach())[non_pad_mask]
         critic_loss = 0.5 * residual.pow(2) * torch.abs(self.tau - torch.less(residual, 0).float())
-        critic_loss = self.alpha * (cql_loss1 - value)[non_pad_mask] / self.loss_scaler
+        critic_loss += self.alpha * (cql_loss1 - value)
+        critic_loss = critic_loss[non_pad_mask]
 
         batch_tokens = critic_loss.size(0) / num_samples
         avg_actor_loss = torch.sum(actor_loss) / batch_tokens

@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from dataclasses import dataclass, field
-from fairseq import logging
+from fairseq.tasks import FairseqTask
 from . import register_task
 from .translation import TranslationTask, TranslationConfig
 from fairseq.optim.amp_optimizer import AMPOptimizer
@@ -46,7 +46,6 @@ class TranslationWithActorCritic(TranslationTask):
     def __init__(self, cfg, src_dict, tgt_dict):
         super().__init__(cfg, src_dict, tgt_dict)
         self.vf_init_state_dict = None
-        self.vf = None
         self.base_model = None
         if cfg.base_model_path:
             state = load_checkpoint_to_cpu(cfg.base_model_path)
@@ -54,13 +53,15 @@ class TranslationWithActorCritic(TranslationTask):
                 base_cfg = convert_namespace_to_omegaconf(state["args"])
             elif "cfg" in state and state["cfg"] is not None:
                 base_cfg = state["cfg"]
-            self.base_model = super().build_model(base_cfg.model)
+            self.base_model = FairseqTask.build_model(self, base_cfg.model)
             self.base_model.load_state_dict(state["model"], model_cfg=base_cfg.model)
+            self.base_model.cuda()
+        self.vf = ValueEstimator(base_cfg.model.decoder_embed_dim, len(self.tgt_dict))
+        self.cfg = cfg
 
     def build_model(self, cfg):
         model = super().build_model(cfg)
-        model.vf = ValueEstimator(model.cfg.decoder_embed_dim, len(self.tgt_dict))
-        self.vf = model.vf
+        model.vf = self.vf
         if self.vf_init_state_dict is not None:
             self.vf.load_state_dict(self.vf_init_state_dict)
         return model
@@ -91,7 +92,7 @@ class TranslationWithActorCritic(TranslationTask):
     ):
         if self.base_model is not None:
             print("USING BASE MODEL")
-            models = [self.base_model.to(next(models[0].parameters()).device)]
+            models = [self.base_model.cuda()]
         if self.cfg.use_critic_generator:
             if extra_gen_cls_kwargs is None:
                 extra_gen_cls_kwargs = {}
