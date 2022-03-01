@@ -1,13 +1,9 @@
 
-import numpy as np
-import collections
-import math
 import json
 from argparse import Namespace
 from dataclasses import dataclass, field
 
 import torch
-import torch.optim as optim
 import torch.nn.functional as F
 import sacrebleu
 from fairseq import metrics, utils
@@ -19,37 +15,40 @@ from fairseq.data.data_utils import collate_tokens
 class ActorCriticCriterionConfig(FairseqDataclass):
     sample_beam: int = field(default=5, metadata={"help": "number of sample size"})
     use_beam_while_training: bool = field(default=False)
-    use_clone_loss: bool = field(default=True)
+    use_reinforce: bool = field(default=False)
+    use_clone_loss: bool = field(default=False)
     alpha: float = field(default=1.0)
     tau: float = field(default=0.9)
     detach_actor: bool = field(default=False)
     reward_scaler: float = field(default=50.)
     learn_offline: bool = field(default=False)
-    offline_data_path: str = field(default="")
-    additional_offline_data: float = field(default=1.0)
+    learn_imitate: bool = field(default=False)
+    no_generation: bool = field(default=False)
 
 @register_criterion(
     "actor_critic", dataclass=ActorCriticCriterionConfig
 )
 class ActorCriticCriterion(FairseqCriterion):
-    def __init__(self, task, sample_beam, use_beam_while_training,
+    def __init__(self, task, sample_beam, use_beam_while_training, use_reinforce,
                  use_clone_loss, alpha, tau, detach_actor, reward_scaler,
-                 learn_offline, offline_data_path, additional_offline_data):
+                 learn_offline, learn_imitate, no_generation):
         super().__init__(task)
         self.sample_beam = sample_beam
         self.use_beam_while_training = use_beam_while_training
+        self.use_reinforce = use_reinforce
         self.use_clone_loss = use_clone_loss
         self.alpha = alpha
         self.tau = tau
         self.detach_actor = detach_actor
         self.reward_scaler = reward_scaler
         self.generator = None
-        self._offline_data = None
         self.vf = None
         self.vf_optimizer = None
         self.learn_offline = learn_offline
-        self.offline_data_path = offline_data_path
-        self.additional_offline_data = additional_offline_data
+        self.learn_imitate = learn_imitate
+        self.no_generation = no_generation
+        self._offline_hypos = {}
+        self._offline_rewards = {}
 
     @property
     def pad_idx(self):
@@ -72,13 +71,13 @@ class ActorCriticCriterion(FairseqCriterion):
         return s
  
     def _build_generator(self, model):
-        if self.generator is None:
-            gen_args = Namespace(**json.loads(self.task.cfg.eval_bleu_args))
-            gen_args.sample_beam = self.sample_beam
-            if not self.use_beam_while_training:
-                gen_args.sampling = True
-                gen_args.sampling_topp = 0.5
-            self.generator = self.task.build_generator([model], gen_args)
+        assert self.generator is None
+        gen_args = Namespace(**json.loads(self.task.cfg.eval_bleu_args))
+        gen_args.sample_beam = self.sample_beam
+        if not self.use_beam_while_training:
+            gen_args.sampling = True
+            gen_args.sampling_topp = 0.5
+        self.generator = self.task.build_generator([model], gen_args)
 
     def _run_generator(self, model, base_sample):
         was_train = model.training
@@ -105,87 +104,128 @@ class ActorCriticCriterion(FairseqCriterion):
         return rewards
 
     def get_batch(self, model, base_sample):
-        if self.learn_offline:
-            if self._offline_data is None:
-                self._generate_offline_data()
-            return self._sample_batch(model, base_sample)
-        else:
-            return self._generate_batch(model, base_sample)
+        if not torch.is_grad_enabled() or self.no_generation or self.learn_imitate:
+            # validtion: we do not produce additional samples for validation.
+            target = base_sample["target"]
+            rewards = self._get_rewards(target, target)
+            return len(target), 1, rewards, base_sample["net_input"], target
+        with torch.no_grad():
+            if self.generator is None:
+                self._build_generator(model)
+            if self.learn_offline:
+                idxs = [idx.item() not in self._offline_hypos for idx in base_sample["id"]]
+                hypos, rewards = [], []
+                if sum(idxs) > 0:
+                    samples_to_generate = {
+                        "id":base_sample["id"][idxs], "target":base_sample["target"][idxs],
+                        "net_input": {"src_tokens": base_sample["net_input"]["src_tokens"][idxs],
+                        "prev_output_tokens": base_sample["net_input"]["prev_output_tokens"][idxs]}}
+                    hypos = self._run_generator(model, samples_to_generate)
+                    hypos = [[preds["tokens"] for preds in each] for each in hypos]
+                    rewards = self._get_rewards(hypos, samples_to_generate["target"])
+                    for i, idx in enumerate(base_sample["id"][idxs]):
+                        self._offline_hypos[idx.item()] = [each.detach().cpu().numpy().copy() for each in hypos[i]]
+                        self._offline_rewards[idx.item()] = rewards[i]
+                inv_idxs = [not each for each in idxs]
+                hypos += [[base_sample["target"].new_tensor(each) for each in self._offline_hypos[idx.item()]] for idx in base_sample["id"][inv_idxs]]
+                rewards += [self._offline_rewards[idx.item()] for idx in base_sample["id"][inv_idxs]]
+            else:
+                hypos = self._run_generator(model, base_sample)
+                hypos = [[preds["tokens"] for preds in each] for each in hypos]
+                rewards = self._get_rewards(hypos, base_sample["target"])
 
-    def _generate_offline_data(self):
-        pass
+            # append ground truth hypo and reward to training set
+            gt_rewards = self._get_rewards(base_sample["target"], base_sample["target"])
+            for i in range(len(rewards)):
+                rewards[i] = rewards[i] + gt_rewards[i]
+                hypos[i] = hypos[i] + [base_sample["target"][i]]
+                
+            num_hypos = len(hypos)
+            num_samples = len(hypos[0])
 
-    def _sample_batch(self, model, base_sample):
-        target = base_sample["target"]
-        rewards = self._get_rewards(target, target)
-        return len(target), 1, rewards, base_sample["net_input"], target
-
-    def _generate_batch(self, model, base_sample):
-        self._build_generator(model)
-        hypos = self._run_generator(model, base_sample)
-        hypos = [[preds["tokens"] for preds in each] for each in hypos]
-        rewards = self._get_rewards(hypos, base_sample["target"])
-        num_hypos = len(hypos)
-        num_samples = len(hypos[0])
-        
-        hypos = [item for sublist in hypos for item in sublist]
-        vinputs = {
-            "src_tokens": base_sample["net_input"]["src_tokens"].tile(
-            1, num_samples).view(num_hypos * num_samples, -1),
-            "src_lengths": base_sample["net_input"]["src_lengths"][:, None].tile(
-                1, num_samples).view(num_hypos * num_samples)}
-        vtargets = collate_tokens(hypos, self.pad_idx, self.eos_idx,
-            left_pad=self.task.cfg.left_pad_target)
-        vinputs["prev_output_tokens"] = collate_tokens(
-            hypos, self.pad_idx, self.eos_idx,
-            left_pad=self.task.cfg.left_pad_target,
-            move_eos_to_beginning=True)
+            hypos = [item for sublist in hypos for item in sublist]
+            vinputs = {
+                "src_tokens": base_sample["net_input"]["src_tokens"].tile(
+                1, num_samples).view(num_hypos * num_samples, -1),
+                "src_lengths": base_sample["net_input"]["src_lengths"][:, None].tile(
+                    1, num_samples).view(num_hypos * num_samples)}
+            vtargets = collate_tokens(hypos, self.pad_idx, self.eos_idx,
+                left_pad=self.task.cfg.left_pad_target)
+            vinputs["prev_output_tokens"] = collate_tokens(
+                hypos, self.pad_idx, self.eos_idx,
+                left_pad=self.task.cfg.left_pad_target,
+                move_eos_to_beginning=True)
 
         return num_hypos, num_samples, rewards, vinputs, vtargets
 
-    def forward(self, model, sample, reduce=True, critic_only=False):
+    def _get_critic_loss(self, model, out_features, vtargets, shape, rewards, reward_scaler):
+        value = model.vf(out_features.detach()) if self.detach_actor else model.vf(out_features)
+        cur_v_star = torch.logsumexp(value, dim=2, keepdim=True).view(*shape)
+        cur_q = torch.gather(value, 2, vtargets[:, :, None]).view(*shape)
 
-        num_hypos, num_samples, rewards, vinputs, vtargets = self.get_batch(model, sample)
+        if not self.learn_imitate:
+            rewards = torch.Tensor(rewards).cuda().view(*shape) / reward_scaler
+            residual = rewards - cur_q
+        else:
+            next_v_star = torch.cat([cur_v_star[:, :, 1:], 0 * cur_v_star[:, :, :1]], axis=2)
+            residual = cur_q - next_v_star
 
+        critic_loss = 0.5 * residual.pow(2) * torch.abs(self.tau - torch.less(residual, 0).float())
+        critic_loss += self.alpha * (cur_v_star - cur_q)
+        return critic_loss, residual
+
+    def _get_clone_loss(self, model, sample):
         orig_output = model(**sample["net_input"])
         orig_lprobs = model.get_normalized_probs(orig_output, log_probs=True)
         orig_lprobs = orig_lprobs.view(-1, orig_lprobs.size(-1))
         target = model.get_targets(sample, orig_output).view(-1)
-        avg_clone_loss = F.nll_loss(orig_lprobs, target, ignore_index=self.pad_idx)
+        return F.nll_loss(orig_lprobs, target, ignore_index=self.pad_idx)
 
-        out_features = model(**vinputs, features_only=True)[0]
+    def _get_actor_loss(self, model, out_features, vtargets, shape, residual):
         net_output = [model.output_layer(out_features)]
-        value = model.vf(out_features.detach()) if self.detach_actor else model.vf(out_features)
-        cql_loss1 = torch.logsumexp(value, dim=2, keepdim=True).view(num_hypos, num_samples, -1)
-        value = torch.gather(value, 2, vtargets[:, :, None]).view(num_hypos, num_samples, -1)
-        
         lprobs = model.get_normalized_probs(net_output, log_probs=True)
-        lprob = lprobs.gather(dim=-1, index=vtargets[:, :, None])
-        score = lprob.view(num_hypos, num_samples, -1)
-        non_pad_mask = vtargets.ne(self.pad_idx).view(num_hypos, num_samples, -1)
-        rewards = lprob.new_tensor(rewards).view(num_hypos, num_samples, 1) / self.reward_scaler
+        score = lprobs.gather(dim=-1, index=vtargets[:, :, None]).view(*shape)
+        return - (score * residual.detach())
+
+    def _average_loss(self, loss, non_pad_mask, batch_tokens):
+        return torch.sum(loss[non_pad_mask]) / batch_tokens
+
+    def _get_pad_mask(self, vtargets, shape):
+        non_pad_mask = vtargets.ne(self.pad_idx).view(*shape)
+        batch_tokens = non_pad_mask.sum() / shape[1]
+        return non_pad_mask, batch_tokens
+
+    def forward(self, model, sample, reduce=True, critic_only=False, reward_scaler=None):
+        assert not (self.learn_imitate and not self.use_clone_loss)
+        reward_scaler = reward_scaler or self.reward_scaler
+
+        num_hypos, num_samples, rewards, vinputs, vtargets = self.get_batch(model, sample)
+        shape = [num_hypos, num_samples, -1]
+        non_pad_mask, batch_tokens = self._get_pad_mask(vtargets, shape)
         
-        residual = rewards - value
-        actor_loss = - (score * residual.detach())[non_pad_mask]
-        critic_loss = 0.5 * residual.pow(2) * torch.abs(self.tau - torch.less(residual, 0).float())
-        critic_loss += self.alpha * (cql_loss1 - value)
-        critic_loss = critic_loss[non_pad_mask]
+        out_features = model(**vinputs, features_only=True)[0]
 
-        batch_tokens = critic_loss.size(0) / num_samples
-        avg_actor_loss = torch.sum(actor_loss) / batch_tokens
-        avg_critic_loss = torch.sum(critic_loss) / batch_tokens
+        critic_loss, residual = self._get_critic_loss(model, out_features, vtargets, shape, rewards, reward_scaler)
+        avg_critic_loss = self._average_loss(critic_loss, non_pad_mask, batch_tokens)
 
-        avg_policy_loss = avg_clone_loss if self.use_clone_loss else avg_actor_loss
-        avg_rl_loss = avg_critic_loss if critic_only else avg_policy_loss + avg_critic_loss
+        if self.use_reinforce:
+            policy_loss = self._get_actor_loss(model, out_features, vtargets, shape, residual)
+            avg_critic_loss = self._average_loss(policy_loss, non_pad_mask, batch_tokens)
+
+        avg_clone_loss = self._get_clone_loss(model, sample)
+        
+        if not self.use_clone_loss or critic_only:
+            avg_clone_loss = avg_clone_loss.detach()
+
+        avg_rl_loss = avg_critic_loss + avg_clone_loss
 
         logging_output = {
             'loss': utils.item(avg_rl_loss.data),
             'clone_loss': utils.item(avg_clone_loss.data),
-            'actor_loss': utils.item(avg_actor_loss.data),
             'critic_loss': utils.item(avg_critic_loss.data),
-            'sample_bleu': utils.item(torch.mean(rewards).data),
             'ntokens': batch_tokens,
         }
+
         return avg_rl_loss, batch_tokens, logging_output
 
     @classmethod
@@ -194,14 +234,10 @@ class ActorCriticCriterion(FairseqCriterion):
         ntokens = sum(log.get("ntokens", 0) for log in logging_outputs)
         loss = sum(log.get("loss", 0) for log in logging_outputs)
         clone_loss = sum(log.get("clone_loss", 0) for log in logging_outputs)
-        actor_loss = sum(log.get("actor_loss", 0) for log in logging_outputs)
         critic_loss = sum(log.get("critic_loss", 0) for log in logging_outputs)
-        sample_bleu = sum(log.get("sample_bleu", 0) for log in logging_outputs)
         metrics.log_scalar("loss", loss, ntokens)
         metrics.log_scalar("clone_loss", clone_loss, ntokens)
-        metrics.log_scalar("actor_loss", actor_loss, ntokens)
         metrics.log_scalar("critic_loss", critic_loss, ntokens)
-        metrics.log_scalar("sample_bleu", sample_bleu, ntokens)
         
     @staticmethod
     def logging_outputs_can_be_summed() -> bool:

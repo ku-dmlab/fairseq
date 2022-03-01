@@ -14,7 +14,7 @@ def run(lr=5e-5, tau=0.9, detached=False, seed=0, resume=False):
     + ["--seed", str(seed + 12345)]
     + ["--patience", "100"]
     + ["--use-beam-while-training"]
-    + ["--validate-interval-updates", "100"]
+    #+ ["--validate-interval-updates", "100"]
     + ["--arch", "transformer_iwslt_de_en"]
     + ["--share-decoder-input-output-embed"]
     + ["--reset-optimizer"]
