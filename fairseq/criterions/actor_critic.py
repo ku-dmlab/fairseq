@@ -29,24 +29,22 @@ class ActorCriticCriterionConfig(FairseqDataclass):
     "actor_critic", dataclass=ActorCriticCriterionConfig
 )
 class ActorCriticCriterion(FairseqCriterion):
-    def __init__(self, task, sample_beam, use_beam_while_training, use_reinforce,
-                 use_clone_loss, alpha, tau, detach_actor, reward_scaler,
-                 learn_offline, learn_imitate, no_generation):
+    def __init__(self, task, cfg):
         super().__init__(task)
-        self.sample_beam = sample_beam
-        self.use_beam_while_training = use_beam_while_training
-        self.use_reinforce = use_reinforce
-        self.use_clone_loss = use_clone_loss
-        self.alpha = alpha
-        self.tau = tau
-        self.detach_actor = detach_actor
-        self.reward_scaler = reward_scaler
+        self.sample_beam = cfg.sample_beam
+        self.use_beam_while_training = cfg.use_beam_while_training
+        self.use_reinforce = cfg.use_reinforce
+        self.use_clone_loss = cfg.use_clone_loss
+        self.alpha = cfg.alpha
+        self.tau = cfg.tau
+        self.detach_actor = cfg.detach_actor
+        self.reward_scaler = cfg.reward_scaler
         self.generator = None
         self.vf = None
         self.vf_optimizer = None
-        self.learn_offline = learn_offline
-        self.learn_imitate = learn_imitate
-        self.no_generation = no_generation
+        self.learn_offline = cfg.learn_offline
+        self.learn_imitate = cfg.learn_imitate
+        self.no_generation = cfg.no_generation
         self._offline_hypos = {}
         self._offline_rewards = {}
 
@@ -158,7 +156,7 @@ class ActorCriticCriterion(FairseqCriterion):
 
         return num_hypos, num_samples, rewards, vinputs, vtargets
 
-    def _get_critic_loss(self, model, out_features, vtargets, shape, rewards, reward_scaler):
+    def _get_critic_loss(self, model, out_features, vtargets, shape, rewards, reward_scaler, without_residual_loss):
         value = model.vf(out_features.detach()) if self.detach_actor else model.vf(out_features)
         cur_v_star = torch.logsumexp(value, dim=2, keepdim=True).view(*shape)
         cur_q = torch.gather(value, 2, vtargets[:, :, None]).view(*shape)
@@ -169,6 +167,8 @@ class ActorCriticCriterion(FairseqCriterion):
         else:
             next_v_star = torch.cat([cur_v_star[:, :, 1:], 0 * cur_v_star[:, :, :1]], axis=2)
             residual = cur_q - next_v_star
+            if without_residual_loss:
+                residual = residual * 0.
 
         critic_loss = 0.5 * residual.pow(2) * torch.abs(self.tau - torch.less(residual, 0).float())
         critic_loss += self.alpha * (cur_v_star - cur_q)
@@ -195,9 +195,12 @@ class ActorCriticCriterion(FairseqCriterion):
         batch_tokens = non_pad_mask.sum() / shape[1]
         return non_pad_mask, batch_tokens
 
-    def forward(self, model, sample, reduce=True, critic_only=False, reward_scaler=None):
+    def forward(self, model, sample, reduce=True, critic_only=False, reward_scaler=None, without_residual_loss=False):
         assert not (self.learn_imitate and not self.use_clone_loss)
-        reward_scaler = reward_scaler or self.reward_scaler
+        if reward_scaler is None:
+            reward_scaler = self.reward_scaler
+        else:
+            reward_scaler = self.reward_scaler * reward_scaler
 
         num_hypos, num_samples, rewards, vinputs, vtargets = self.get_batch(model, sample)
         shape = [num_hypos, num_samples, -1]
@@ -205,7 +208,7 @@ class ActorCriticCriterion(FairseqCriterion):
         
         out_features = model(**vinputs, features_only=True)[0]
 
-        critic_loss, residual = self._get_critic_loss(model, out_features, vtargets, shape, rewards, reward_scaler)
+        critic_loss, residual = self._get_critic_loss(model, out_features, vtargets, shape, rewards, reward_scaler, without_residual_loss)
         avg_critic_loss = self._average_loss(critic_loss, non_pad_mask, batch_tokens)
 
         if self.use_reinforce:
