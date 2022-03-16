@@ -38,7 +38,7 @@ class TranslationWithActorCriticConfig(TranslationConfig):
         default="", metadata={"help": "path to model for sequence generation"}
     )
     use_critic_generator: bool = field(default=False)
-    critic_mix_ratio: float = field(default=1.0)
+    critic_mix_ratio: float = field(default=0.5)
 
 @register_task("translation_with_actor_critic", dataclass=TranslationWithActorCriticConfig)
 class TranslationWithActorCritic(TranslationTask):
@@ -90,10 +90,10 @@ class TranslationWithActorCritic(TranslationTask):
     def build_generator(
         self, models, args, seq_gen_cls=None, extra_gen_cls_kwargs=None, prefix_allowed_tokens_fn=None,
     ):
-        if self.base_model is not None:
-            print("USING BASE MODEL")
-            models = [self.base_model.cuda()]
         if self.cfg.use_critic_generator:
+            if self.base_model is not None:
+                print("USING BASE MODEL")
+                models = [self.base_model.cuda()]
             if extra_gen_cls_kwargs is None:
                 extra_gen_cls_kwargs = {}
             extra_gen_cls_kwargs["vf"] = self.vf
