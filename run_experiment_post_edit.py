@@ -69,7 +69,7 @@ class Experiment():
         elif base_model_path is not None:
             self.train_args += ["--restore-file", base_model_path, "--base-model-path", base_model_path]
             self.test_args += ["--base-model-path", base_model_path]
-            self.train_task = self.test_task = AC_TASK
+            self.train_task = self.test_task = task
 
     def get_train_args(self):
         dep_args = [
@@ -112,9 +112,6 @@ class Experiment():
                 ret_dict[f"{self.exp_id}_{ratio}"] = test(ratio)
             return ret_dict
 
-
-def get_output_dir(id, seed):
-    return os.path.join(BASE_DIR, )
 
 def run_online(i):
     all_scores = {}
@@ -302,4 +299,4 @@ def run_online(i):
 
 if __name__ == "__main__":
     os.environ["CUDA_VISIBLE_DEVICES"] = sys.argv[1]
-    run_online(int(sys.argv[1]))
+    run_online(12345 + int(sys.argv[1]))
