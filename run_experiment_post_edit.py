@@ -96,6 +96,7 @@ class Experiment():
         def test(critic_mixt_ratio=None):
             test_path = os.path.join(str(pathlib.Path().resolve()), "fairseq_cli", "generate.py")
             os.makedirs(os.path.dirname(self.sample_dir), exist_ok=True)
+            add_arg = []
             if critic_mixt_ratio is not None:
                 add_arg = ["--critic-mix-ratio", str(critic_mixt_ratio)]
             with open(self.sample_dir, 'w') as f:
@@ -118,18 +119,13 @@ def run_online(i):
     
     # train_baseline
     id = "baseline"
-    train_args = ["--lr", "5e-4", "--criterion", "label_smoothed_cross_entropy_post_edit",
-        "--label-smoothing", "0.1", "--use-base-for-train"]
-    exp = Experiment(id, i, train_args=train_args)
-    all_scores.update(exp.run())
-
     base_model_path = os.path.join(BASE_DIR, id, str(i), "checkpoint_best.pt")
     
     # train_reinforce
     id = "reinforce"
     train_args = ["--lr", "5e-5", "--criterion", "actor_critic_post_edit",
         "--use-reinforce", "--use-clone-loss", "--reset-optimizer"]
-    exp = Experiment(id, i, base_model_path=base_model_path, train_args=train_args)
+    exp = Experiment(id, i, train_args=train_args, task=AC_TASK, base_model_path=base_model_path)
     all_scores.update(exp.run())
 
     # ours_online
@@ -137,7 +133,7 @@ def run_online(i):
     train_args = ["--lr", "5e-5", "--criterion", "actor_critic_post_edit",
         "--use-clone-loss", "--reset-optimizer", "--use-critic-generator"]
     test_args = ["--use-critic-generator"]
-    exp = Experiment(id, i, base_model_path=base_model_path, train_args=train_args, test_args=test_args)
+    exp = Experiment(id, i, base_model_path=base_model_path, train_args=train_args, test_args=test_args, task=AC_TASK)
     all_scores.update(exp.run())
 
     # save results
@@ -299,4 +295,4 @@ def run_online(i):
 
 if __name__ == "__main__":
     os.environ["CUDA_VISIBLE_DEVICES"] = sys.argv[1]
-    run_online(12345 + int(sys.argv[1]))
+    run_online(100 + int(sys.argv[1]))

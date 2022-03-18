@@ -14,7 +14,7 @@ from fairseq.data.data_utils import collate_tokens
 @dataclass
 class ActorCriticCriterionConfig(FairseqDataclass):
     sample_beam: int = field(default=5, metadata={"help": "number of sample size"})
-    use_beam_while_training: bool = field(default=False)
+    use_beam_while_training: bool = field(default=True)
     use_reinforce: bool = field(default=False)
     use_clone_loss: bool = field(default=False)
     alpha: float = field(default=1.0)
@@ -45,8 +45,6 @@ class ActorCriticCriterion(FairseqCriterion):
         self.learn_offline = cfg.learn_offline
         self.learn_imitate = cfg.learn_imitate
         self.no_generation = cfg.no_generation
-        self._offline_hypos = {}
-        self._offline_rewards = {}
 
     @property
     def pad_idx(self):
@@ -110,6 +108,7 @@ class ActorCriticCriterion(FairseqCriterion):
         with torch.no_grad():
             if self.generator is None:
                 self._build_generator(model)
+            """
             if self.learn_offline:
                 idxs = [idx.item() not in self._offline_hypos for idx in base_sample["id"]]
                 hypos, rewards = [], []
@@ -128,9 +127,10 @@ class ActorCriticCriterion(FairseqCriterion):
                 hypos += [[base_sample["target"].new_tensor(each) for each in self._offline_hypos[idx.item()]] for idx in base_sample["id"][inv_idxs]]
                 rewards += [self._offline_rewards[idx.item()] for idx in base_sample["id"][inv_idxs]]
             else:
-                hypos = self._run_generator(model, base_sample)
-                hypos = [[preds["tokens"] for preds in each] for each in hypos]
-                rewards = self._get_rewards(hypos, base_sample["target"])
+            """
+            hypos = self._run_generator(model, base_sample)
+            hypos = [[preds["tokens"] for preds in each] for each in hypos]
+            rewards = self._get_rewards(hypos, base_sample["target"])
 
             # append ground truth hypo and reward to training set
             gt_rewards = self._get_rewards(base_sample["target"], base_sample["target"])
@@ -153,16 +153,15 @@ class ActorCriticCriterion(FairseqCriterion):
                 hypos, self.pad_idx, self.eos_idx,
                 left_pad=self.task.cfg.left_pad_target,
                 move_eos_to_beginning=True)
-
+        del hypos
         return num_hypos, num_samples, rewards, vinputs, vtargets
 
-    def _get_critic_loss(self, model, out_features, vtargets, shape, rewards, reward_scaler, without_residual_loss):
+    def _get_critic_loss(self, model, out_features, vtargets, shape, rewards, without_residual_loss):
         value = model.vf(out_features.detach()) if self.detach_actor else model.vf(out_features)
         cur_v_star = torch.logsumexp(value, dim=2, keepdim=True).view(*shape)
         cur_q = torch.gather(value, 2, vtargets[:, :, None]).view(*shape)
 
         if not self.learn_imitate:
-            rewards = torch.Tensor(rewards).cuda().view(*shape) / reward_scaler
             residual = rewards - cur_q
         else:
             next_v_star = torch.cat([cur_v_star[:, :, 1:], 0 * cur_v_star[:, :, :1]], axis=2)
@@ -172,7 +171,7 @@ class ActorCriticCriterion(FairseqCriterion):
 
         critic_loss = 0.5 * residual.pow(2) * torch.abs(self.tau - torch.less(residual, 0).float())
         critic_loss += self.alpha * (cur_v_star - cur_q)
-        return critic_loss, residual
+        return critic_loss
 
     def _get_clone_loss(self, model, sample):
         orig_output = model(**sample["net_input"])
@@ -181,11 +180,13 @@ class ActorCriticCriterion(FairseqCriterion):
         target = model.get_targets(sample, orig_output).view(-1)
         return F.nll_loss(orig_lprobs, target, ignore_index=self.pad_idx)
 
-    def _get_actor_loss(self, model, out_features, vtargets, shape, residual):
+    def _get_actor_loss(self, model, out_features, vtargets, shape, rewards):
         net_output = [model.output_layer(out_features)]
         lprobs = model.get_normalized_probs(net_output, log_probs=True)
         score = lprobs.gather(dim=-1, index=vtargets[:, :, None]).view(*shape)
-        return - (score * residual.detach())
+        adv = rewards - rewards.mean(1, keepdim=True)
+        del lprobs
+        return - (score * adv)
 
     def _average_loss(self, loss, non_pad_mask, batch_tokens):
         return torch.sum(loss[non_pad_mask]) / batch_tokens
@@ -203,17 +204,20 @@ class ActorCriticCriterion(FairseqCriterion):
             reward_scaler = self.reward_scaler * reward_scaler
 
         num_hypos, num_samples, rewards, vinputs, vtargets = self.get_batch(model, sample)
+
         shape = [num_hypos, num_samples, -1]
         non_pad_mask, batch_tokens = self._get_pad_mask(vtargets, shape)
+
+        rewards = torch.Tensor(rewards).cuda().view(*shape) / reward_scaler
         
         out_features = model(**vinputs, features_only=True)[0]
 
-        critic_loss, residual = self._get_critic_loss(model, out_features, vtargets, shape, rewards, reward_scaler, without_residual_loss)
-        avg_critic_loss = self._average_loss(critic_loss, non_pad_mask, batch_tokens)
-
         if self.use_reinforce:
-            policy_loss = self._get_actor_loss(model, out_features, vtargets, shape, residual)
+            policy_loss = self._get_actor_loss(model, out_features, vtargets, shape, rewards)
             avg_critic_loss = self._average_loss(policy_loss, non_pad_mask, batch_tokens)
+        else:
+            critic_loss = self._get_critic_loss(model, out_features, vtargets, shape, rewards, without_residual_loss)
+            avg_critic_loss = self._average_loss(critic_loss, non_pad_mask, batch_tokens)
 
         avg_clone_loss = self._get_clone_loss(model, sample)
         
@@ -228,7 +232,7 @@ class ActorCriticCriterion(FairseqCriterion):
             'critic_loss': utils.item(avg_critic_loss.data),
             'ntokens': batch_tokens,
         }
-
+        del out_features, vtargets, vinputs, rewards
         return avg_rl_loss, batch_tokens, logging_output
 
     @classmethod

@@ -28,18 +28,21 @@ class ActorCriticPostEditCriterion(ActorCriticCriterion):
 
     def forward(self, model, sample, reduce=True, critic_only=False):
         #assert not self.learn_imitate and self.use_clone_loss
-        if "base" in sample:
+        if self.task.cfg.use_pe_for_eval and "base" in sample:
             base_ret = super().forward(
                 model, sample["base"], reduce, critic_only, without_residual_loss=self.use_base_residual)
             pe_ret = super().forward(
-                model, sample["base"], reduce, critic_only, reward_scaler=self.pe_reward_scale, without_residual_loss=self.use_mt_residual)
+                model, sample["pe"], reduce, critic_only, reward_scaler=self.pe_reward_scale, without_residual_loss=self.use_mt_residual)
             mt_ret = super().forward(
-                model, sample["base"], reduce, critic_only, reward_scaler=self.mt_reward_scale, without_residual_loss=self.use_pe_residual)
+                model, sample["mt"], reduce, critic_only, reward_scaler=self.mt_reward_scale, without_residual_loss=self.use_pe_residual)
             all_returns = [base_ret, pe_ret, mt_ret]
             loss = sum([each[0] for each in all_returns])
             sample_sizes = sum([each[1] for each in all_returns])
             logging_outputs = [each[2] for each in all_returns]
             logging_output = {k:sum([each[k] for each in logging_outputs]) for k in logging_outputs[0].keys()}
             return loss, sample_sizes, logging_output
+        elif "base" in sample:
+            return super().forward(
+                model, sample["base"], reduce, critic_only, without_residual_loss=self.use_base_residual)
         else:
             return super().forward(model, sample, reduce, critic_only)

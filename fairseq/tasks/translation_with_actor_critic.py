@@ -53,9 +53,10 @@ class TranslationWithActorCritic(TranslationTask):
                 base_cfg = convert_namespace_to_omegaconf(state["args"])
             elif "cfg" in state and state["cfg"] is not None:
                 base_cfg = state["cfg"]
-            self.base_model = FairseqTask.build_model(self, base_cfg.model)
-            self.base_model.load_state_dict(state["model"], model_cfg=base_cfg.model)
-            self.base_model.cuda()
+            if cfg.use_critic_generator:
+                self.base_model = FairseqTask.build_model(self, base_cfg.model)
+                self.base_model.load_state_dict(state["model"], model_cfg=base_cfg.model)
+                self.base_model.cuda()
         self.vf = ValueEstimator(base_cfg.model.decoder_embed_dim, len(self.tgt_dict))
         self.cfg = cfg
 
