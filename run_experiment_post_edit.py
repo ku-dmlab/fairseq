@@ -41,8 +41,7 @@ class Experiment():
         "--best-checkpoint-metric", "bleu",
         "--maximize-best-checkpoint-metric",
         "--patience", "10",
-        "--no-epoch-checkpoints",
-        "--save-interval", "5"]
+        "--no-epoch-checkpoints"]
     BASE_TEST_ARGS = [
         "data-bin/iwslt14.tokenized.en-de",
         "--mt-data", "data-bin/iwslt14.tokenized.en-de.mt",
@@ -124,7 +123,7 @@ def run_online(i):
     # train_reinforce
     id = "reinforce"
     train_args = ["--lr", "5e-5", "--criterion", "actor_critic_post_edit",
-        "--use-reinforce", "--use-clone-loss", "--reset-optimizer"]
+        "--use-reinforce", "--use-clone-loss", "--reset-optimizer", "--reward-scaler", "1"]
     exp = Experiment(id, i, train_args=train_args, task=AC_TASK, base_model_path=base_model_path)
     all_scores.update(exp.run())
 
