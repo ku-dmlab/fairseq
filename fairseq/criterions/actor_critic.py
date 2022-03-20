@@ -14,7 +14,7 @@ from fairseq.data.data_utils import collate_tokens
 @dataclass
 class ActorCriticCriterionConfig(FairseqDataclass):
     sample_beam: int = field(default=5, metadata={"help": "number of sample size"})
-    use_beam_while_training: bool = field(default=True)
+    use_beam_while_training: bool = field(default=False)
     use_reinforce: bool = field(default=False)
     use_clone_loss: bool = field(default=False)
     alpha: float = field(default=1.0)
