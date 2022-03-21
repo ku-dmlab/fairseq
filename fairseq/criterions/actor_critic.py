@@ -16,6 +16,7 @@ class ActorCriticCriterionConfig(FairseqDataclass):
     sample_beam: int = field(default=5, metadata={"help": "number of sample size"})
     use_beam_while_training: bool = field(default=False)
     use_reinforce: bool = field(default=False)
+    use_ac: bool = field(default=False)
     use_clone_loss: bool = field(default=False)
     alpha: float = field(default=1.0)
     tau: float = field(default=0.9)
@@ -34,6 +35,7 @@ class ActorCriticCriterion(FairseqCriterion):
         self.sample_beam = cfg.sample_beam
         self.use_beam_while_training = cfg.use_beam_while_training
         self.use_reinforce = cfg.use_reinforce
+        self.use_ac = cfg.use_ac
         self.use_clone_loss = cfg.use_clone_loss
         self.alpha = cfg.alpha
         self.tau = cfg.tau
@@ -45,6 +47,8 @@ class ActorCriticCriterion(FairseqCriterion):
         self.learn_offline = cfg.learn_offline
         self.learn_imitate = cfg.learn_imitate
         self.no_generation = cfg.no_generation
+
+        assert not (cfg.use_reinforce and cfg.learn_offline) # REINFORCE is on-policy algorithm
 
     @property
     def pad_idx(self):
@@ -134,7 +138,7 @@ class ActorCriticCriterion(FairseqCriterion):
 
             # append ground truth hypo and reward to training set
             # should only done while off-policy training
-            if not self.use_reinforce:
+            if not self.use_reinforce and not self.use_ac:
                 gt_rewards = self._get_rewards(base_sample["target"], base_sample["target"])
                 for i in range(len(rewards)):
                     rewards[i] = rewards[i] + gt_rewards[i]
@@ -173,7 +177,7 @@ class ActorCriticCriterion(FairseqCriterion):
 
         critic_loss = 0.5 * residual.pow(2) * torch.abs(self.tau - torch.less(residual, 0).float())
         critic_loss += self.alpha * (cur_v_star - cur_q)
-        return critic_loss
+        return critic_loss, cur_q - cur_v_star
 
     def _get_clone_loss(self, model, sample):
         orig_output = model(**sample["net_input"])
@@ -188,7 +192,7 @@ class ActorCriticCriterion(FairseqCriterion):
         score = lprobs.gather(dim=-1, index=vtargets[:, :, None]).view(*shape)
         adv = rewards - rewards.mean(1, keepdim=True)
         del lprobs
-        return - (score * adv)
+        return - (score * adv.detach())
 
     def _average_loss(self, loss, non_pad_mask, batch_tokens):
         return torch.sum(loss[non_pad_mask]) / batch_tokens
@@ -216,26 +220,31 @@ class ActorCriticCriterion(FairseqCriterion):
 
         if self.use_reinforce:
             policy_loss = self._get_actor_loss(model, out_features, vtargets, shape, rewards)
-            avg_critic_loss = self._average_loss(policy_loss, non_pad_mask, batch_tokens)
+            avg_rl_loss = self._average_loss(policy_loss, non_pad_mask, batch_tokens)
+        elif self.use_ac:
+            critic_loss, cur_q = self._get_critic_loss(model, out_features, vtargets, shape, rewards, without_residual_loss)
+            policy_loss = self._get_actor_loss(model, out_features, vtargets, shape, cur_q)
+            avg_rl_loss = self._average_loss(policy_loss, non_pad_mask, batch_tokens)
+            avg_rl_loss += self._average_loss(critic_loss, non_pad_mask, batch_tokens)
         else:
-            critic_loss = self._get_critic_loss(model, out_features, vtargets, shape, rewards, without_residual_loss)
-            avg_critic_loss = self._average_loss(critic_loss, non_pad_mask, batch_tokens)
+            critic_loss, _ = self._get_critic_loss(model, out_features, vtargets, shape, rewards, without_residual_loss)
+            avg_rl_loss = self._average_loss(critic_loss, non_pad_mask, batch_tokens)
 
         avg_clone_loss = self._get_clone_loss(model, sample)
         
         if not self.use_clone_loss or critic_only:
             avg_clone_loss = avg_clone_loss.detach()
 
-        avg_rl_loss = avg_critic_loss + avg_clone_loss
+        avg_tot_loss = avg_rl_loss + avg_clone_loss
 
         logging_output = {
-            'loss': utils.item(avg_rl_loss.data),
+            'loss': utils.item(avg_tot_loss.data),
             'clone_loss': utils.item(avg_clone_loss.data),
-            'critic_loss': utils.item(avg_critic_loss.data),
+            'rl_loss': utils.item(avg_rl_loss.data),
             'ntokens': batch_tokens,
         }
         del out_features, vtargets, vinputs, rewards
-        return avg_rl_loss, batch_tokens, logging_output
+        return avg_tot_loss, batch_tokens, logging_output
 
     @classmethod
     def reduce_metrics(cls, logging_outputs) -> None:
@@ -243,10 +252,10 @@ class ActorCriticCriterion(FairseqCriterion):
         ntokens = sum(log.get("ntokens", 0) for log in logging_outputs)
         loss = sum(log.get("loss", 0) for log in logging_outputs)
         clone_loss = sum(log.get("clone_loss", 0) for log in logging_outputs)
-        critic_loss = sum(log.get("critic_loss", 0) for log in logging_outputs)
+        rl_loss = sum(log.get("rl_loss", 0) for log in logging_outputs)
         metrics.log_scalar("loss", loss, ntokens)
         metrics.log_scalar("clone_loss", clone_loss, ntokens)
-        metrics.log_scalar("critic_loss", critic_loss, ntokens)
+        metrics.log_scalar("rl_loss", rl_loss, ntokens)
         
     @staticmethod
     def logging_outputs_can_be_summed() -> bool:

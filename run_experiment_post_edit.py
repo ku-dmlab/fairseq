@@ -32,6 +32,7 @@ class Experiment():
         "--warmup-updates", "4000",
         "--dropout", "0.3",
         "--weight-decay", "0.0001",
+        "--max-tokens", "2048",
         "--eval-bleu",
         "--eval-bleu-args", '{"beam": 5, "max_len_a": 1.2, "max_len_b": 10}',
         "--eval-bleu-detok", "moses",
@@ -62,18 +63,12 @@ class Experiment():
         self.train_args = train_args or []
         self.test_args = test_args or []
 
-        if task is None:
-            self.train_args += ["--max-tokens", "4096"]
-            if base_model_path is not None:
+        if task is None and base_model_path is not None:
                 self.train_args += ["--restore-file", base_model_path]
         elif base_model_path is not None:
             self.train_args += ["--restore-file", base_model_path, "--base-model-path", base_model_path]
             self.test_args += ["--base-model-path", base_model_path]
             self.train_task = self.test_task = task
-            if "online" in exp_id:
-                self.train_args += ["--max-tokens", "2048"]
-            else:
-                self.train_args += ["--max-tokens", "4096"]
 
     def get_train_args(self):
         dep_args = [
@@ -132,7 +127,7 @@ def run_online(i):
 def run_baseline(i, dict):
     id = "baseline"
     train_args = ["--lr", "5e-4", "--criterion", "label_smoothed_cross_entropy_post_edit",
-        "--label-smoothing", "0.1", "--use-base-for-train", "--max-epoch", "40"]
+        "--label-smoothing", "0.1", "--use-base-for-train"]
     exp = Experiment(id, i, train_args=train_args)
     dict.update(exp.run())
 
@@ -170,6 +165,23 @@ def run_ours_online(i, dict, use_clone_loss=True, use_beam_while_training=False,
     
     exp = Experiment(id, i, train_args=train_args, test_args=test_args, task=AC_TASK, base_model_path=base_model_path)
     dict.update(exp.run(try_different_ratio=True))
+
+def run_ac_online(i, dict, use_clone_loss=True, use_beam_while_training=False, reward_scaler=50):
+    base_model_path = os.path.join(BASE_DIR, "baseline", str(i), "checkpoint_best.pt")
+    
+    id = "ac_online"
+    train_args = ["--lr", "5e-5", "--criterion", "actor_critic_post_edit", "--use-ac", "--reset-optimizer"]
+    if use_clone_loss:
+        train_args.append("--use-clone-loss")
+        id += "_clone"
+    if use_beam_while_training:
+        train_args.append("--use-beam-while-training")
+        id += "_beam"
+    train_args.extend(["--reward-scaler", str(reward_scaler)])
+    id += f"_reward_{reward_scaler}"
+    
+    exp = Experiment(id, i, train_args=train_args, task=AC_TASK, base_model_path=base_model_path)
+    dict.update(exp.run())
 
 # TODO: AC, offline AC, offline ours
 
