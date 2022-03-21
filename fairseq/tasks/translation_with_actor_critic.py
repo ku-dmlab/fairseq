@@ -91,7 +91,7 @@ class TranslationWithActorCritic(TranslationTask):
     def build_generator(
         self, models, args, seq_gen_cls=None, extra_gen_cls_kwargs=None, prefix_allowed_tokens_fn=None,
     ):
-        if self.cfg.use_critic_generator and not args.sampling:
+        if self.cfg.use_critic_generator and not getattr(args, "sampling", False):
             if self.base_model is not None:
                 print("USING BASE MODEL")
                 models = [self.base_model.cuda()]

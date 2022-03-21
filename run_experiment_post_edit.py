@@ -32,7 +32,6 @@ class Experiment():
         "--warmup-updates", "4000",
         "--dropout", "0.3",
         "--weight-decay", "0.0001",
-        "--max-tokens", "2048", # If OOM happens, we should reduce this into half or sth. It will reduce training speed though.
         "--eval-bleu",
         "--eval-bleu-args", '{"beam": 5, "max_len_a": 1.2, "max_len_b": 10}',
         "--eval-bleu-detok", "moses",
@@ -63,12 +62,18 @@ class Experiment():
         self.train_args = train_args or []
         self.test_args = test_args or []
 
-        if task is None and base_model_path is not None:
-            self.train_args += ["--restore-file", base_model_path]
+        if task is None:
+            self.train_args += ["--max-tokens", "4096"]
+            if base_model_path is not None:
+                self.train_args += ["--restore-file", base_model_path]
         elif base_model_path is not None:
             self.train_args += ["--restore-file", base_model_path, "--base-model-path", base_model_path]
             self.test_args += ["--base-model-path", base_model_path]
             self.train_task = self.test_task = task
+            if "online" in exp_id:
+                self.train_args += ["--max-tokens", "2048"]
+            else:
+                self.train_args += ["--max-tokens", "4096"]
 
     def get_train_args(self):
         dep_args = [
@@ -115,30 +120,59 @@ class Experiment():
 
 def run_online(i):
     all_scores = {}
-    
-    # train_baseline
-    id = "baseline"
-    base_model_path = os.path.join(BASE_DIR, id, str(i), "checkpoint_best.pt")
-    
-    # train_reinforce
-    id = "reinforce"
-    train_args = ["--lr", "5e-5", "--criterion", "actor_critic_post_edit",
-        "--use-reinforce", "--use-clone-loss", "--reset-optimizer", "--reward-scaler", "1"]
-    exp = Experiment(id, i, train_args=train_args, task=AC_TASK, base_model_path=base_model_path)
-    all_scores.update(exp.run())
-
-    # ours_online
-    id = "ours_online"
-    train_args = ["--lr", "5e-5", "--criterion", "actor_critic_post_edit",
-        "--use-clone-loss", "--reset-optimizer", "--use-critic-generator"]
-    test_args = ["--use-critic-generator"]
-    exp = Experiment(id, i, base_model_path=base_model_path, train_args=train_args, test_args=test_args, task=AC_TASK)
-    all_scores.update(exp.run())
+    run_reinforce_online(i, all_scores)
+    run_ours_online(i, all_scores)
 
     # save results
-    res_file = os.path.join(RESULTS_DIR, f"result_{i}.pkl")
+    print(all_scores)
+    res_file = os.path.join(RESULTS_DIR, f"result_online_{i}.pkl")
     with open(res_file, "wb") as f:
         pickle.dump(all_scores, f)
+
+def run_baseline(i, dict):
+    id = "baseline"
+    train_args = ["--lr", "5e-4", "--criterion", "label_smoothed_cross_entropy_post_edit",
+        "--label-smoothing", "0.1", "--use-base-for-train", "--max-epoch", "40"]
+    exp = Experiment(id, i, train_args=train_args)
+    dict.update(exp.run())
+
+def run_reinforce_online(i, dict, use_clone_loss=True, use_beam_while_training=False, reward_scaler=50):
+    base_model_path = os.path.join(BASE_DIR, "baseline", str(i), "checkpoint_best.pt")
+    
+    id = "reinforce_online"
+    train_args = ["--lr", "5e-5", "--criterion", "actor_critic_post_edit", "--use-reinforce", "--reset-optimizer"]
+    if use_clone_loss:
+        train_args.append("--use-clone-loss")
+        id += "_clone"
+    if use_beam_while_training:
+        train_args.append("--use-beam-while-training")
+        id += "_beam"
+    train_args.extend(["--reward-scaler", str(reward_scaler)])
+    id += f"_reward_{reward_scaler}"
+    
+    exp = Experiment(id, i, train_args=train_args, task=AC_TASK, base_model_path=base_model_path)
+    dict.update(exp.run())
+
+def run_ours_online(i, dict, use_clone_loss=True, use_beam_while_training=False, reward_scaler=50):
+    base_model_path = os.path.join(BASE_DIR, "baseline", str(i), "checkpoint_best.pt")
+    
+    id = "ours_online"
+    train_args = ["--lr", "5e-5", "--criterion", "actor_critic_post_edit", "--reset-optimizer", "--use-critic-generator"]
+    test_args = ["--use-critic-generator"]
+    if use_clone_loss:
+        train_args.append("--use-clone-loss")
+        id += "_clone"
+    if use_beam_while_training:
+        train_args.append("--use-beam-while-training")
+        id += "_beam"
+    train_args.append("--reward-scaler", str(reward_scaler))
+    id += f"_reward_{reward_scaler}"
+    
+    exp = Experiment(id, i, train_args=train_args, test_args=test_args, task=AC_TASK, base_model_path=base_model_path)
+    dict.update(exp.run(try_different_ratio=True))
+
+# TODO: AC, offline AC, offline ours
+
 
 # def experiment_single(i):
 #     all_scores = {}

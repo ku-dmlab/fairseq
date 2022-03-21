@@ -133,10 +133,12 @@ class ActorCriticCriterion(FairseqCriterion):
             rewards = self._get_rewards(hypos, base_sample["target"])
 
             # append ground truth hypo and reward to training set
-            gt_rewards = self._get_rewards(base_sample["target"], base_sample["target"])
-            for i in range(len(rewards)):
-                rewards[i] = rewards[i] + gt_rewards[i]
-                hypos[i] = hypos[i] + [base_sample["target"][i]]
+            # should only done while off-policy training
+            if not self.use_reinforce:
+                gt_rewards = self._get_rewards(base_sample["target"], base_sample["target"])
+                for i in range(len(rewards)):
+                    rewards[i] = rewards[i] + gt_rewards[i]
+                    hypos[i] = hypos[i] + [base_sample["target"][i]]
                 
             num_hypos = len(hypos)
             num_samples = len(hypos[0])
