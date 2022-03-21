@@ -160,7 +160,7 @@ def run_ours_online(i, dict, use_clone_loss=True, use_beam_while_training=False,
     if use_beam_while_training:
         train_args.append("--use-beam-while-training")
         id += "_beam"
-    train_args.append("--reward-scaler", str(reward_scaler))
+    train_args.extend(["--reward-scaler", str(reward_scaler)])
     id += f"_reward_{reward_scaler}"
     
     exp = Experiment(id, i, train_args=train_args, test_args=test_args, task=AC_TASK, base_model_path=base_model_path)
