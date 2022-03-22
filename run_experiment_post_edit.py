@@ -124,6 +124,18 @@ def run_online(i):
     with open(res_file, "wb") as f:
         pickle.dump(all_scores, f)
 
+def opt_alpha(i):
+    alpha = {100:0, 101:0.1, 102:0.3, 103:3.0}
+    scores = {}
+    run_ours_online(100, scores, alpha=alpha[i])
+    print(scores)
+
+def opt_tau(i):
+    tau = {100:0.5, 101:0.75, 102:0.95, 103:0.97}
+    scores = {}
+    run_ours_online(100, scores, tau=tau[i])
+    print(scores)
+
 def run_baseline(i, dict):
     id = "baseline"
     train_args = ["--lr", "5e-4", "--criterion", "label_smoothed_cross_entropy_post_edit",
@@ -148,7 +160,7 @@ def run_reinforce_online(i, dict, use_clone_loss=True, use_beam_while_training=F
     exp = Experiment(id, i, train_args=train_args, task=AC_TASK, base_model_path=base_model_path)
     dict.update(exp.run())
 
-def run_ours_online(i, dict, use_clone_loss=True, use_beam_while_training=False, reward_scaler=50):
+def run_ours_online(i, dict, use_clone_loss=True, use_beam_while_training=False, reward_scaler=50, alpha=None, tau=None):
     base_model_path = os.path.join(BASE_DIR, "baseline", str(i), "checkpoint_best.pt")
     
     id = "ours_online"
@@ -160,6 +172,12 @@ def run_ours_online(i, dict, use_clone_loss=True, use_beam_while_training=False,
     if use_beam_while_training:
         train_args.append("--use-beam-while-training")
         id += "_beam"
+    if alpha is not None:
+        train_args.extend(["--alpha", str(alpha)])
+        id += f"_alpha_{alpha}"
+    if tau is not None:
+        train_args.extend(["--tau", str(tau)])
+        id += f"_tau_{tau}"
     train_args.extend(["--reward-scaler", str(reward_scaler)])
     id += f"_reward_{reward_scaler}"
     
@@ -340,4 +358,4 @@ def run_ac_online(i, dict, use_clone_loss=True, use_beam_while_training=False, r
 
 if __name__ == "__main__":
     os.environ["CUDA_VISIBLE_DEVICES"] = sys.argv[1]
-    run_online(100 + int(sys.argv[1]))
+    opt_alpha(100 + int(sys.argv[1]))
