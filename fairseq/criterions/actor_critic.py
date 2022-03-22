@@ -186,13 +186,14 @@ class ActorCriticCriterion(FairseqCriterion):
         target = model.get_targets(sample, orig_output).view(-1)
         return F.nll_loss(orig_lprobs, target, ignore_index=self.pad_idx)
 
-    def _get_actor_loss(self, model, out_features, vtargets, shape, rewards):
+    def _get_actor_loss(self, model, out_features, vtargets, shape, rewards, subtract_mean=True):
         net_output = [model.output_layer(out_features)]
         lprobs = model.get_normalized_probs(net_output, log_probs=True)
         score = lprobs.gather(dim=-1, index=vtargets[:, :, None]).view(*shape)
-        adv = rewards - rewards.mean(1, keepdim=True)
+        if subtract_mean:
+            rewards = rewards - rewards.mean(1, keepdim=True)
         del lprobs
-        return - (score * adv.detach())
+        return - (score * rewards.detach())
 
     def _average_loss(self, loss, non_pad_mask, batch_tokens):
         return torch.sum(loss[non_pad_mask]) / batch_tokens
@@ -223,7 +224,7 @@ class ActorCriticCriterion(FairseqCriterion):
             avg_rl_loss = self._average_loss(policy_loss, non_pad_mask, batch_tokens)
         elif self.use_ac:
             critic_loss, cur_q = self._get_critic_loss(model, out_features, vtargets, shape, rewards, without_residual_loss)
-            policy_loss = self._get_actor_loss(model, out_features, vtargets, shape, cur_q)
+            policy_loss = self._get_actor_loss(model, out_features, vtargets, shape, cur_q, subtract_mean=False)
             avg_rl_loss = self._average_loss(policy_loss, non_pad_mask, batch_tokens)
             avg_rl_loss += self._average_loss(critic_loss, non_pad_mask, batch_tokens)
         else:
