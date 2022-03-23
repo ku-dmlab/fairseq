@@ -115,6 +115,7 @@ class Experiment():
 
 def run_online(i):
     all_scores = {}
+    run_baseline(i, all_scores)
     run_reinforce_online(i, all_scores)
     run_ours_online(i, all_scores)
 
@@ -124,22 +125,31 @@ def run_online(i):
     with open(res_file, "wb") as f:
         pickle.dump(all_scores, f)
 
-def opt_alpha(i):
-    alpha = {100:0, 101:0.1, 102:0.3, 103:3.0}
-    scores = {}
-    run_ours_online(100, scores, alpha=alpha[i])
-    print(scores)
 
-def opt_tau(i):
+def run_opt(i):
+    all_scores = {}
+    run_baseline(i, all_scores)
+    opt_alpha(i, all_scores)
+    opt_tau(i, all_scores)
+
+    # save results
+    print(all_scores)
+    res_file = os.path.join(RESULTS_DIR, f"result_opt_{i}.pkl")
+    with open(res_file, "wb") as f:
+        pickle.dump(all_scores, f)
+
+def opt_alpha(i, dict):
+    alpha = {100:0, 101:0.1, 102:0.3, 103:3.0}
+    run_ours_online(100, dict, alpha=alpha[i])
+
+def opt_tau(i, dict):
     tau = {100:0.5, 101:0.75, 102:0.95, 103:0.97}
-    scores = {}
-    run_ours_online(100, scores, tau=tau[i])
-    print(scores)
+    run_ours_online(100, dict, tau=tau[i])
 
 def run_baseline(i, dict):
     id = "baseline"
     train_args = ["--lr", "5e-4", "--criterion", "label_smoothed_cross_entropy_post_edit",
-        "--label-smoothing", "0.1", "--use-base-for-train"]
+        "--label-smoothing", "0.1", "--use-base-for-train", "--max-epoch", "40"]
     exp = Experiment(id, i, train_args=train_args)
     dict.update(exp.run())
 
@@ -358,4 +368,4 @@ def run_ac_online(i, dict, use_clone_loss=True, use_beam_while_training=False, r
 
 if __name__ == "__main__":
     os.environ["CUDA_VISIBLE_DEVICES"] = sys.argv[1]
-    opt_alpha(100 + int(sys.argv[1]))
+    run_online(100 + int(sys.argv[1]))
