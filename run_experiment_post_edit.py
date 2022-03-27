@@ -32,7 +32,6 @@ class Experiment():
         "--warmup-updates", "4000",
         "--dropout", "0.3",
         "--weight-decay", "0.0001",
-        "--max-tokens", "2048",
         "--eval-bleu",
         "--eval-bleu-args", '{"beam": 5, "max_len_a": 1.2, "max_len_b": 10}',
         "--eval-bleu-detok", "moses",
@@ -52,7 +51,7 @@ class Experiment():
     ]
 
     def __init__(self, exp_id, seed,
-                 train_args=None, test_args=None, base_model_path=None, task=None):
+                 train_args=None, test_args=None, base_model_path=None, task=None, max_tokens=4096):
 
         self.exp_id = exp_id
         self.output_dir = os.path.join(BASE_DIR, exp_id, str(seed))
@@ -63,8 +62,9 @@ class Experiment():
         self.train_args = train_args or []
         self.test_args = test_args or []
 
+        self.train_args += ["--max-tokens", str(max_tokens)]
         if task is None and base_model_path is not None:
-                self.train_args += ["--restore-file", base_model_path]
+            self.train_args += ["--restore-file", base_model_path]
         elif base_model_path is not None:
             self.train_args += ["--restore-file", base_model_path, "--base-model-path", base_model_path]
             self.test_args += ["--base-model-path", base_model_path]
@@ -149,7 +149,7 @@ def opt_tau(i, dict):
 def run_baseline(i, dict):
     id = "baseline"
     train_args = ["--lr", "5e-4", "--criterion", "label_smoothed_cross_entropy_post_edit",
-        "--label-smoothing", "0.1", "--use-base-for-train", "--max-epoch", "40"]
+        "--label-smoothing", "0.1", "--use-base-for-train", "--max-epoch", "30"]
     exp = Experiment(id, i, train_args=train_args)
     dict.update(exp.run())
 
@@ -167,10 +167,10 @@ def run_reinforce_online(i, dict, use_clone_loss=True, use_beam_while_training=F
     train_args.extend(["--reward-scaler", str(reward_scaler)])
     id += f"_reward_{reward_scaler}"
     
-    exp = Experiment(id, i, train_args=train_args, task=AC_TASK, base_model_path=base_model_path)
+    exp = Experiment(id, i, train_args=train_args, task=AC_TASK, base_model_path=base_model_path, max_tokens=2048)
     dict.update(exp.run())
 
-def run_ours_online(i, dict, use_clone_loss=True, use_beam_while_training=False, reward_scaler=50, alpha=None, tau=None):
+def run_ours_online(i, dict, use_clone_loss=True, use_beam_while_training=True, reward_scaler=50, alpha=None, tau=None):
     base_model_path = os.path.join(BASE_DIR, "baseline", str(i), "checkpoint_best.pt")
     
     id = "ours_online"
@@ -181,6 +181,7 @@ def run_ours_online(i, dict, use_clone_loss=True, use_beam_while_training=False,
         id += "_clone"
     if use_beam_while_training:
         train_args.append("--use-beam-while-training")
+        train_args.extend(["--critic-mix-ratio", "0.5"])
         id += "_beam"
     if alpha is not None:
         train_args.extend(["--alpha", str(alpha)])
