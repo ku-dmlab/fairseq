@@ -39,8 +39,7 @@ class Experiment():
         "--eval-bleu-print-samples",
         "--best-checkpoint-metric", "bleu",
         "--maximize-best-checkpoint-metric",
-        "--patience", "10",
-        "--no-epoch-checkpoints"]
+        "--patience", "10"]
     BASE_TEST_ARGS = [
         "data-bin/iwslt14.tokenized.en-de",
         "--mt-data", "data-bin/iwslt14.tokenized.en-de.mt",
@@ -149,7 +148,7 @@ def opt_tau(i, dict):
 def run_baseline(i, dict):
     id = "baseline"
     train_args = ["--lr", "5e-4", "--criterion", "label_smoothed_cross_entropy_post_edit",
-        "--label-smoothing", "0.1", "--use-base-for-train", "--max-epoch", "30"]
+        "--label-smoothing", "0.1", "--use-base-for-train", "--max-epoch", "20"]
     exp = Experiment(id, i, train_args=train_args)
     dict.update(exp.run())
 
@@ -369,4 +368,4 @@ def run_ac_online(i, dict, use_clone_loss=True, use_beam_while_training=False, r
 
 if __name__ == "__main__":
     os.environ["CUDA_VISIBLE_DEVICES"] = sys.argv[1]
-    run_online(100 + int(sys.argv[1]))
+    run_opt(100 + int(sys.argv[1]))
