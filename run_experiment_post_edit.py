@@ -39,7 +39,8 @@ class Experiment():
         "--eval-bleu-print-samples",
         "--best-checkpoint-metric", "bleu",
         "--maximize-best-checkpoint-metric",
-        "--patience", "10"]
+        "--patience", "20",
+        "--validate-interval-updates", "100"]
     BASE_TEST_ARGS = [
         "data-bin/iwslt14.tokenized.en-de",
         "--mt-data", "data-bin/iwslt14.tokenized.en-de.mt",
@@ -142,13 +143,13 @@ def opt_alpha(i, dict):
     run_ours_online(100, dict, alpha=alpha[i])
 
 def opt_tau(i, dict):
-    tau = {100:0.5, 101:0.75, 102:0.95, 103:0.97}
+    tau = {100:0.5, 101:0.75, 102:0.95, 103:0.99}
     run_ours_online(100, dict, tau=tau[i])
 
 def run_baseline(i, dict):
     id = "baseline"
     train_args = ["--lr", "5e-4", "--criterion", "label_smoothed_cross_entropy_post_edit",
-        "--label-smoothing", "0.1", "--use-base-for-train", "--max-epoch", "20"]
+        "--label-smoothing", "0.1", "--use-base-for-train", "--max-epoch", "40"]
     exp = Experiment(id, i, train_args=train_args)
     dict.update(exp.run())
 
