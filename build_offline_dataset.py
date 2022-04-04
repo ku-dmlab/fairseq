@@ -1,23 +1,24 @@
 
-import sys
-import ast
-import shutil
-import logging
-import numpy as np
 import os
-import torch
-from argparse import Namespace
-import sacrebleu
-
-from dataclasses import dataclass
-from fairseq import utils, options, tasks, checkpoint_utils
-from fairseq.data import Dictionary, data_utils, indexed_dataset, iterators
-from fairseq.dataclass.utils import convert_namespace_to_omegaconf
-from fairseq.file_io import PathManager
-from fairseq.logging import progress_bar
-
+import sys
+import shutil
 
 def main(cfg, out_dir, tgt_pfx, data_key="base"):
+    
+    import ast
+    import logging
+    import numpy as np
+    import torch
+    from argparse import Namespace
+    import sacrebleu
+
+    from dataclasses import dataclass
+    from fairseq import utils, options, tasks, checkpoint_utils
+    from fairseq.data import Dictionary, data_utils, indexed_dataset, iterators
+    from fairseq.dataclass.utils import convert_namespace_to_omegaconf
+    from fairseq.file_io import PathManager
+    from fairseq.logging import progress_bar
+
     output_bin = os.path.join(out_dir, f"{tgt_pfx}.bin")
     output_idx = os.path.join(out_dir, f"{tgt_pfx}.idx")
     score_bin = os.path.join(out_dir, "score.npy")
@@ -128,6 +129,8 @@ def main(cfg, out_dir, tgt_pfx, data_key="base"):
     np.save(score_bin, np.array(scores))
 
 def get_cfg_and_run(seed):
+    from fairseq import options
+
     OUT_DIR = f"data-bin/iwslt14.tokenized.offline.{seed}.en-de"
     SRC_PFX = "train.en-de.en"
     TGT_PFX = "train.en-de.de"
@@ -161,7 +164,7 @@ def get_cfg_and_run(seed):
             os.path.join(BASE_DATA_DIR, fname),
             os.path.join(OUT_DIR, fname))
 
-    main(args, out_dir=OUT_DIR, tgt_fpx=TGT_PFX)
+    main(args, out_dir=OUT_DIR, tgt_pfx=TGT_PFX)
 
 
 if __name__ == "__main__":
