@@ -31,9 +31,6 @@ class ValueEstimator(nn.Module):
 
 @dataclass
 class TranslationWithActorCriticConfig(TranslationConfig):
-    warmup_critic: int = field(
-        default=-1, metadata={"help": "only use critic loss for this number of start of the update"}
-    )
     base_model_path: str = field(
         default="", metadata={"help": "path to model for sequence generation"}
     )
@@ -74,8 +71,7 @@ class TranslationWithActorCritic(TranslationTask):
         model.set_num_updates(update_num)
         with torch.autograd.profiler.record_function("forward"):
             with torch.cuda.amp.autocast(enabled=(isinstance(optimizer, AMPOptimizer))):
-                loss, sample_size, logging_output = criterion(model, sample, 
-                    critic_only=(update_num < self.cfg.warmup_critic))
+                loss, sample_size, logging_output = criterion(model, sample)
         if ignore_grad:
             loss *= 0
         with torch.autograd.profiler.record_function("backward"):

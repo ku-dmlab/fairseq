@@ -10,6 +10,7 @@ from fairseq import metrics, utils
 from fairseq.criterions import FairseqCriterion, register_criterion
 from fairseq.dataclass import FairseqDataclass
 from fairseq.data.data_utils import collate_tokens
+from fairseq.tasks.translation_with_actor_critic_offline import TranslationWithActorCriticOffline
 
 @dataclass
 class ActorCriticCriterionConfig(FairseqDataclass):
@@ -22,9 +23,7 @@ class ActorCriticCriterionConfig(FairseqDataclass):
     tau: float = field(default=0.9)
     detach_actor: bool = field(default=False)
     reward_scaler: float = field(default=50.)
-    learn_offline: bool = field(default=False)
     learn_imitate: bool = field(default=False)
-    no_generation: bool = field(default=False)
 
 @register_criterion(
     "actor_critic", dataclass=ActorCriticCriterionConfig
@@ -44,11 +43,7 @@ class ActorCriticCriterion(FairseqCriterion):
         self.generator = None
         self.vf = None
         self.vf_optimizer = None
-        self.learn_offline = cfg.learn_offline
         self.learn_imitate = cfg.learn_imitate
-        self.no_generation = cfg.no_generation
-
-        assert not (cfg.use_reinforce and cfg.learn_offline) # REINFORCE is on-policy algorithm
 
     @property
     def pad_idx(self):
@@ -104,34 +99,16 @@ class ActorCriticCriterion(FairseqCriterion):
         return rewards
 
     def get_batch(self, model, base_sample):
-        if not torch.is_grad_enabled() or self.no_generation or self.learn_imitate:
+        if isinstance(self.task, TranslationWithActorCriticOffline) or not torch.is_grad_enabled():
+            # either offline RL / imitation, or
             # validtion: we do not produce additional samples for validation.
             target = base_sample["target"]
-            rewards = self._get_rewards(target, target)
+            #gt_rewards = [[100]] * len(target) = self._get_rewards(target, target)
+            rewards = base_sample.get("score", [[100]] * len(target))
             return len(target), 1, rewards, base_sample["net_input"], target
         with torch.no_grad():
             if self.generator is None:
                 self._build_generator(model)
-            """
-            if self.learn_offline:
-                idxs = [idx.item() not in self._offline_hypos for idx in base_sample["id"]]
-                hypos, rewards = [], []
-                if sum(idxs) > 0:
-                    samples_to_generate = {
-                        "id":base_sample["id"][idxs], "target":base_sample["target"][idxs],
-                        "net_input": {"src_tokens": base_sample["net_input"]["src_tokens"][idxs],
-                        "prev_output_tokens": base_sample["net_input"]["prev_output_tokens"][idxs]}}
-                    hypos = self._run_generator(model, samples_to_generate)
-                    hypos = [[preds["tokens"] for preds in each] for each in hypos]
-                    rewards = self._get_rewards(hypos, samples_to_generate["target"])
-                    for i, idx in enumerate(base_sample["id"][idxs]):
-                        self._offline_hypos[idx.item()] = [each.detach().cpu().numpy().copy() for each in hypos[i]]
-                        self._offline_rewards[idx.item()] = rewards[i]
-                inv_idxs = [not each for each in idxs]
-                hypos += [[base_sample["target"].new_tensor(each) for each in self._offline_hypos[idx.item()]] for idx in base_sample["id"][inv_idxs]]
-                rewards += [self._offline_rewards[idx.item()] for idx in base_sample["id"][inv_idxs]]
-            else:
-            """
             hypos = self._run_generator(model, base_sample)
             hypos = [[preds["tokens"] for preds in each] for each in hypos]
             rewards = self._get_rewards(hypos, base_sample["target"])
@@ -203,7 +180,7 @@ class ActorCriticCriterion(FairseqCriterion):
         batch_tokens = non_pad_mask.sum() / shape[1]
         return non_pad_mask, batch_tokens
 
-    def forward(self, model, sample, reduce=True, critic_only=False, reward_scaler=None, without_residual_loss=False):
+    def forward(self, model, sample, reduce=True, do_not_clone=False, reward_scaler=None, without_residual_loss=False):
         assert not (self.learn_imitate and not self.use_clone_loss)
         if reward_scaler is None:
             reward_scaler = self.reward_scaler
@@ -215,7 +192,9 @@ class ActorCriticCriterion(FairseqCriterion):
         shape = [num_hypos, num_samples, -1]
         non_pad_mask, batch_tokens = self._get_pad_mask(vtargets, shape)
 
-        rewards = torch.Tensor(rewards).cuda().view(*shape) / reward_scaler
+        if not torch.is_tensor(rewards):
+            rewards = torch.Tensor(rewards).cuda()
+        rewards = rewards.view(*shape) / reward_scaler
         
         out_features = model(**vinputs, features_only=True)[0]
 
@@ -233,7 +212,7 @@ class ActorCriticCriterion(FairseqCriterion):
 
         avg_clone_loss = self._get_clone_loss(model, sample)
         
-        if not self.use_clone_loss or critic_only:
+        if not self.use_clone_loss or do_not_clone:
             avg_clone_loss = avg_clone_loss.detach()
 
         avg_tot_loss = avg_rl_loss + avg_clone_loss

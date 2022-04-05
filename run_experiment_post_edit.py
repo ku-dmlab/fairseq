@@ -1,5 +1,6 @@
 #!/usr/bin/env python3 -u
 import contextlib
+import itertools
 import os
 import pathlib
 import pickle
@@ -19,10 +20,11 @@ os.makedirs(RESULTS_DIR, exist_ok=True)
 
 
 class Experiment():
+    POST_EDIT_ARGS = [
+        "--mt-data", "data-bin/iwslt14.tokenized.en-de.mt",
+        "--pe-data", "data-bin/iwslt14.tokenized.en-de.pe"]
     BASE_TRAIN_ARGS = [
         "data-bin/iwslt14.tokenized.en-de",
-        "--mt-data", "data-bin/iwslt14.tokenized.en-de.mt",
-        "--pe-data", "data-bin/iwslt14.tokenized.en-de.pe",
         "--arch", "transformer_iwslt_de_en",
         "--share-decoder-input-output-embed",
         "--optimizer", "adam",
@@ -38,13 +40,9 @@ class Experiment():
         "--eval-bleu-remove-bpe",
         "--eval-bleu-print-samples",
         "--best-checkpoint-metric", "bleu",
-        "--maximize-best-checkpoint-metric",
-        "--patience", "20",
-        "--validate-interval-updates", "100"]
+        "--maximize-best-checkpoint-metric"]
     BASE_TEST_ARGS = [
         "data-bin/iwslt14.tokenized.en-de",
-        "--mt-data", "data-bin/iwslt14.tokenized.en-de.mt",
-        "--pe-data", "data-bin/iwslt14.tokenized.en-de.pe",
         "--batch-size", "128",
         "--beam", "5",
         "--remove-bpe"
@@ -58,17 +56,24 @@ class Experiment():
         os.makedirs(self.output_dir, exist_ok=True)
         self.sample_dir = os.path.join(SAMPLES_DIR, exp_id, str(seed) + ".gen")
         self.seed = seed
-        self.train_task = self.test_task = BASE_TASK
+        self.train_task = task or BASE_TASK
+        self.test_task = task or BASE_TASK
         self.train_args = train_args or []
         self.test_args = test_args or []
 
         self.train_args += ["--max-tokens", str(max_tokens)]
-        if task is None and base_model_path is not None:
+        if task == BASE_TASK and base_model_path is not None:
             self.train_args += ["--restore-file", base_model_path]
         elif base_model_path is not None:
             self.train_args += ["--restore-file", base_model_path, "--base-model-path", base_model_path]
             self.test_args += ["--base-model-path", base_model_path]
-            self.train_task = self.test_task = task
+        if self.train_task == BASE_TASK:
+            self.train_args += ["--patience", "10"]
+        else:
+            self.train_args += ["--patience", "100", "--validate-interval-updates", "100"]
+            if "post_edit" in self.train_task:
+                self.train_args += self.POST_EDIT_ARGS
+                self.test_args += self.POST_EDIT_ARGS
 
     def get_train_args(self):
         dep_args = [
@@ -146,6 +151,21 @@ def opt_tau(i, dict):
     tau = {100:0.5, 101:0.75, 102:0.95, 103:0.99}
     run_ours_online(100, dict, tau=tau[i])
 
+def run_opt_offline(i):
+    all_scores = {}
+    alpha = [0.0, 0.1, 0.3, 1.0, 3.0, 10.0]
+    tau = [0.5, 0.75, 0.9, 0.95, 0.97, 0.99]
+    for ind, (a, t) in enumerate(itertools.product(alpha, tau)):
+        if ind % 4 == (i - 100):
+            run_ours_offline(100, all_scores, alpha=a, tau=t)
+
+    # save results
+    print(all_scores)
+    res_file = os.path.join(RESULTS_DIR, f"result_offline_opt_{i}.pkl")
+    with open(res_file, "wb") as f:
+        pickle.dump(all_scores, f)
+
+
 def run_baseline(i, dict):
     id = "baseline"
     train_args = ["--lr", "5e-4", "--criterion", "label_smoothed_cross_entropy_post_edit",
@@ -195,178 +215,34 @@ def run_ours_online(i, dict, use_clone_loss=True, use_beam_while_training=True, 
     exp = Experiment(id, i, train_args=train_args, test_args=test_args, task=AC_TASK, base_model_path=base_model_path)
     dict.update(exp.run(try_different_ratio=True))
 
-def run_ac_online(i, dict, use_clone_loss=True, use_beam_while_training=False, reward_scaler=50):
+def run_ours_offline(i, dict, use_clone_loss=True, use_beam_while_training=True, reward_scaler=50, alpha=None, tau=None):
     base_model_path = os.path.join(BASE_DIR, "baseline", str(i), "checkpoint_best.pt")
+    TASK = "translation_with_actor_critic_offline"
     
-    id = "ac_online"
-    train_args = ["--lr", "5e-5", "--criterion", "actor_critic_post_edit", "--use-ac", "--reset-optimizer"]
+    id = "ours_offline"
+    train_args = ["--lr", "5e-5", "--criterion", "actor_critic_offline", "--reset-optimizer", "--use-critic-generator",
+                  "--offline-data", f"data-bin/iwslt14.tokenized.offline.{i}.en-de"]
+    test_args = ["--use-critic-generator"]
     if use_clone_loss:
         train_args.append("--use-clone-loss")
         id += "_clone"
     if use_beam_while_training:
         train_args.append("--use-beam-while-training")
+        train_args.extend(["--critic-mix-ratio", "0.5"])
         id += "_beam"
+    if alpha is not None:
+        train_args.extend(["--alpha", str(alpha)])
+        id += f"_alpha_{alpha}"
+    if tau is not None:
+        train_args.extend(["--tau", str(tau)])
+        id += f"_tau_{tau}"
     train_args.extend(["--reward-scaler", str(reward_scaler)])
     id += f"_reward_{reward_scaler}"
     
-    exp = Experiment(id, i, train_args=train_args, task=AC_TASK, base_model_path=base_model_path)
-    dict.update(exp.run())
+    exp = Experiment(id, i, train_args=train_args, test_args=test_args, task=TASK, base_model_path=base_model_path)
+    dict.update(exp.run(try_different_ratio=True))
 
-# TODO: AC, offline AC, offline ours
-
-
-# def experiment_single(i):
-#     all_scores = {}
-    
-#     # train_baseline
-#     id = "baseline"
-#     train_args = ["--lr", "5e-4", "--criterion", "label_smoothed_cross_entropy_post_edit",
-#         "--label-smoothing", "0.1", "--use-base-for-train"]
-#     exp = Experiment(id, i, train_args=train_args)
-#     all_scores[id] = exp.run()
-
-#     base_model_path = os.path.join(BASE_DIR, id, str(i), "checkpoint_best.pt")
-    
-#     # train_reinforce
-#     id = "reinforce"
-#     train_args = ["--lr", "5e-5", "--criterion", "actor_critic_post_edit",
-#         "--use-reinforce", "--use-clone-loss", "--reset-optimizer"]
-#     exp = Experiment(id, i, base_model_path=base_model_path, train_args=train_args)
-#     all_scores[id] = exp.run()
-
-#     # train_reinforce_offline
-#     id = "reinforce_offline"
-#     train_args.append("--learn-offline")
-#     exp = Experiment(id, i, base_model_path=base_model_path, train_args=train_args)
-#     all_scores[id] = exp.run()
-
-#     # ours_online
-#     id = "ours_online"
-#     train_args = ["--lr", "5e-5", "--criterion", "actor_critic_post_edit",
-#         "--use-clone-loss", "--reset-optimizer", "--use-critic-generator"]
-#     exp = Experiment(id, i, base_model_path=base_model_path, train_args=train_args)
-#     all_scores[id] = exp.run()
-
-#     # ours_offline
-#     id = "ours_offline"
-#     train_args.append("--learn-offline")
-#     exp = Experiment(id, i, base_model_path=base_model_path, train_args=train_args)
-#     all_scores[id] = exp.run()
-
-#     # ours_imitate
-#     id = "ours_imitate"
-#     train_args.append("--learn-imitate")
-#     exp = Experiment(id, i, base_model_path=base_model_path, train_args=train_args)
-#     all_scores[id] = exp.run()
-
-#     # save results
-#     res_file = os.path.join(RESULTS_DIR, f"result_{i}.pkl")
-#     with open(res_file, "wb") as f:
-#         pickle.dump(all_scores, f)
-
-# def experiment_pe_su(i):
-#     all_scores = {}
-#     id = "baseline"
-#     train_args = ["--lr", "5e-4", "--criterion", "label_smoothed_cross_entropy_post_edit",
-#         "--label-smoothing", "0.1", "--use-base-for-train"]
-#     exp = Experiment(id, i, train_args=train_args)
-#     all_scores[id] = exp.run()
-
-#     base_model_path = os.path.join(BASE_DIR, "baseline", str(i), "checkpoint_best.pt")
-#     test_args = ["--use-pe-for-eval"]
-    
-#     id = "su_base"
-#     train_args = ["--lr", "5e-5", "--criterion", "label_smoothed_cross_entropy_post_edit",
-#         "--label-smoothing", "0.1", "--use-base-for-train", "--use-pe-for-eval", "--reset-optimizer"]
-#     exp = Experiment(id, i, base_model_path=base_model_path, train_args=train_args, test_args=test_args)
-#     all_scores[id] = exp.run()
-
-#     id = "su_pe"
-#     train_args = ["--lr", "5e-5", "--criterion", "label_smoothed_cross_entropy_post_edit",
-#         "--label-smoothing", "0.1", "--use-pe-for-train", "--use-pe-for-eval", "--reset-optimizer"]
-#     exp = Experiment(id, i, base_model_path=base_model_path, train_args=train_args, test_args=test_args)
-#     all_scores[id] = exp.run()
-
-#     id = "su_mt"
-#     train_args = ["--lr", "5e-5", "--criterion", "label_smoothed_cross_entropy_post_edit",
-#         "--label-smoothing", "0.1", "--use-mt-for-train", "--use-pe-for-eval", "--reset-optimizer"]
-#     exp = Experiment(id, i, base_model_path=base_model_path, train_args=train_args, test_args=test_args)
-#     all_scores[id] = exp.run()
-
-#     id = "su_base_pe"
-#     train_args = ["--lr", "5e-5", "--criterion", "label_smoothed_cross_entropy_post_edit",
-#         "--label-smoothing", "0.1", "--use-base-for-train", "--use-pe-for-train", "--use-pe-for-eval", "--reset-optimizer"]
-#     exp = Experiment(id, i, base_model_path=base_model_path, train_args=train_args, test_args=test_args)
-#     all_scores[id] = exp.run()
-
-#     id = "su_base_mt"
-#     train_args = ["--lr", "5e-5", "--criterion", "label_smoothed_cross_entropy_post_edit",
-#         "--label-smoothing", "0.1", "--use-base-for-train", "--use-mt-for-train", "--use-pe-for-eval", "--reset-optimizer"]
-#     exp = Experiment(id, i, base_model_path=base_model_path, train_args=train_args, test_args=test_args)
-#     all_scores[id] = exp.run()
-
-#     id = "su_pe_mt"
-#     train_args = ["--lr", "5e-5", "--criterion", "label_smoothed_cross_entropy_post_edit",
-#         "--label-smoothing", "0.1", "--use-pe-for-train", "--use-mt-for-train", "--use-pe-for-eval", "--reset-optimizer"]
-#     exp = Experiment(id, i, base_model_path=base_model_path, train_args=train_args, test_args=test_args)
-#     all_scores[id] = exp.run()
-
-#     id = "su_all"
-#     train_args = ["--lr", "5e-5", "--criterion", "label_smoothed_cross_entropy_post_edit",
-#         "--label-smoothing", "0.1", "--use-base-for-train", "--use-pe-for-train", "--use-mt-for-train", "--use-pe-for-eval", "--reset-optimizer"]
-#     exp = Experiment(id, i, base_model_path=base_model_path, train_args=train_args, test_args=test_args)
-#     all_scores[id] = exp.run()
-
-#     # save results
-#     res_file = os.path.join(RESULTS_DIR, f"result_pe_su_{i}.pkl")
-#     with open(res_file, "wb") as f:
-#         pickle.dump(all_scores, f)
-
-# def experiment_pe_rl(i):
-#     all_scores = {}
-
-#     base_model_path = os.path.join(BASE_DIR, "baseline", str(i), "checkpoint_best.pt")
-#     test_args = ["--use-pe-for-eval"]
-    
-#     # train_reinforce
-#     id = "pe_reinforce"
-#     train_args = ["--lr", "5e-5", "--criterion", "actor_critic_post_edit",
-#         "--use-reinforce", "--use-clone-loss", "--reset-optimizer", "--use-pe-for-eval"]
-#     exp = Experiment(id, i, base_model_path=base_model_path, train_args=train_args, test_args=test_args)
-#     all_scores[id] = exp.run()
-
-#     # train_reinforce_offline
-#     id = "pe_reinforce_offline"
-#     train_args.append("--learn-offline")
-#     exp = Experiment(id, i, base_model_path=base_model_path, train_args=train_args)
-#     all_scores[id] = exp.run()
-
-#     # ours_online
-#     id = "pe_ours_online"
-#     train_args = ["--lr", "5e-5", "--criterion", "actor_critic_post_edit",
-#         "--use-clone-loss", "--reset-optimizer", "--use-critic-generator", "--use-pe-for-eval"]
-#     exp = Experiment(id, i, base_model_path=base_model_path, train_args=train_args)
-#     all_scores[id] = exp.run()
-
-#     # ours_offline
-#     id = "pe_ours_offline"
-#     train_args.append("--learn-offline")
-#     exp = Experiment(id, i, base_model_path=base_model_path, train_args=train_args)
-#     all_scores[id] = exp.run()
-
-#     # ours_imitate
-#     id = "pe_ours_imitate"
-#     train_args = ["--lr", "5e-5", "--criterion", "actor_critic_post_edit",
-#         "--use-clone-loss", "--reset-optimizer", "--use-critic-generator", "--use-pe-for-eval",
-#         "--learn-imitate", "--use-base-residual", "False", "--use-mt-residual", "False"]
-#     exp = Experiment(id, i, base_model_path=base_model_path, train_args=train_args)
-#     all_scores[id] = exp.run()
-
-#     # save results
-#     res_file = os.path.join(RESULTS_DIR, f"result_pe_rl_{i}.pkl")
-#     with open(res_file, "wb") as f:
-#         pickle.dump(all_scores, f)
 
 if __name__ == "__main__":
     os.environ["CUDA_VISIBLE_DEVICES"] = sys.argv[1]
-    run_opt(100 + int(sys.argv[1]))
+    run_opt_offline(100 + int(sys.argv[1]))
