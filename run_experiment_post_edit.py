@@ -165,6 +165,17 @@ def run_opt_offline(i):
     with open(res_file, "wb") as f:
         pickle.dump(all_scores, f)
 
+def run_imitate(i):
+    all_scores = {}
+    run_ours_imitate(i, all_scores, alpha=0.3)
+    run_ours_imitate(i, all_scores, alpha=1.0)
+    run_ours_imitate(i, all_scores, alpha=3.0)
+
+    # save results
+    print(all_scores)
+    res_file = os.path.join(RESULTS_DIR, f"result_imitate_opt_{i}.pkl")
+    with open(res_file, "wb") as f:
+        pickle.dump(all_scores, f)
 
 def run_baseline(i, dict):
     id = "baseline"
@@ -240,6 +251,28 @@ def run_ours_offline(i, dict, use_clone_loss=True, use_beam_while_training=True,
     id += f"_reward_{reward_scaler}"
     
     exp = Experiment(id, i, train_args=train_args, test_args=test_args, task=TASK, base_model_path=base_model_path)
+    dict.update(exp.run(try_different_ratio=True))
+
+def run_ours_imitate(i, dict, use_clone_loss=True, use_beam_while_training=True, reward_scaler=50, alpha=None):
+    base_model_path = os.path.join(BASE_DIR, "baseline", str(i), "checkpoint_best.pt")
+    
+    id = "ours_imitate"
+    train_args = ["--lr", "5e-5", "--criterion", "actor_critic_post_edit", "--reset-optimizer", "--use-critic-generator"]
+    test_args = ["--use-critic-generator"]
+    if use_clone_loss:
+        train_args.append("--use-clone-loss")
+        id += "_clone"
+    if use_beam_while_training:
+        train_args.append("--use-beam-while-training")
+        train_args.extend(["--critic-mix-ratio", "0.5"])
+        id += "_beam"
+    if alpha is not None:
+        train_args.extend(["--alpha", str(alpha)])
+        id += f"_alpha_{alpha}"
+    train_args.extend(["--reward-scaler", str(reward_scaler)])
+    id += f"_reward_{reward_scaler}"
+    
+    exp = Experiment(id, i, train_args=train_args, test_args=test_args, task=AC_TASK, base_model_path=base_model_path)
     dict.update(exp.run(try_different_ratio=True))
 
 

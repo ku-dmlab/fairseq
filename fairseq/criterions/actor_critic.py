@@ -44,6 +44,8 @@ class ActorCriticCriterion(FairseqCriterion):
         self.vf = None
         self.vf_optimizer = None
         self.learn_imitate = cfg.learn_imitate
+        if self.learn_imitate:
+            self.tau = 0.5 # fix tau to be 0.5 in case of imitaion
 
     @property
     def pad_idx(self):
@@ -99,7 +101,7 @@ class ActorCriticCriterion(FairseqCriterion):
         return rewards
 
     def get_batch(self, model, base_sample):
-        if isinstance(self.task, TranslationWithActorCriticOffline) or not torch.is_grad_enabled():
+        if isinstance(self.task, TranslationWithActorCriticOffline) or not torch.is_grad_enabled() or self.learn_imitate:
             # either offline RL / imitation, or
             # validtion: we do not produce additional samples for validation.
             target = base_sample["target"]
