@@ -165,6 +165,16 @@ def run_opt_offline(i):
     with open(res_file, "wb") as f:
         pickle.dump(all_scores, f)
 
+def run_offline(i):
+    all_scores = {}
+    run_ours_offline(i, all_scores, alpha=1.0, tau=0.7)
+
+    # save results
+    print(all_scores)
+    res_file = os.path.join(RESULTS_DIR, f"result_offline_{i}.pkl")
+    with open(res_file, "wb") as f:
+        pickle.dump(all_scores, f)
+
 def run_imitate(i):
     all_scores = {}
     run_ours_imitate(i, all_scores, alpha=0.3)
@@ -257,7 +267,7 @@ def run_ours_imitate(i, dict, use_clone_loss=True, use_beam_while_training=True,
     base_model_path = os.path.join(BASE_DIR, "baseline", str(i), "checkpoint_best.pt")
     
     id = "ours_imitate"
-    train_args = ["--lr", "5e-5", "--criterion", "actor_critic_post_edit", "--reset-optimizer", "--use-critic-generator"]
+    train_args = ["--lr", "5e-5", "--criterion", "actor_critic_post_edit", "--reset-optimizer", "--use-critic-generator", "--learn-imitate"]
     test_args = ["--use-critic-generator"]
     if use_clone_loss:
         train_args.append("--use-clone-loss")
@@ -278,4 +288,4 @@ def run_ours_imitate(i, dict, use_clone_loss=True, use_beam_while_training=True,
 
 if __name__ == "__main__":
     os.environ["CUDA_VISIBLE_DEVICES"] = sys.argv[1]
-    run_opt_offline(100 + int(sys.argv[1]))
+    run_offline(100 + int(sys.argv[1]))
