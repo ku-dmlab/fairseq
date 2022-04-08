@@ -62,15 +62,14 @@ class Experiment():
         self.test_args = test_args or []
 
         self.train_args += ["--max-tokens", str(max_tokens)]
-        if task == BASE_TASK and base_model_path is not None:
-            self.train_args += ["--restore-file", base_model_path]
-        elif base_model_path is not None:
-            self.train_args += ["--restore-file", base_model_path, "--base-model-path", base_model_path]
-            self.test_args += ["--base-model-path", base_model_path]
-        if self.train_task == BASE_TASK:
+        if base_model_path is None:
             self.train_args += ["--patience", "10"]
         else:
             self.train_args += ["--patience", "100", "--validate-interval-updates", "100"]
+            self.train_args += ["--restore-file", base_model_path]
+            if self.train_task != BASE_TASK:
+                self.train_args += ["--base-model-path", base_model_path]
+                self.test_args += ["--base-model-path", base_model_path]
             if "post_edit" in self.train_task:
                 self.train_args += self.POST_EDIT_ARGS
                 self.test_args += self.POST_EDIT_ARGS
@@ -85,10 +84,13 @@ class Experiment():
         return self.BASE_TRAIN_ARGS + dep_args + self.train_args
 
     def get_test_args(self):
+        best_path = os.path.join(self.output_dir, "checkpoint_best.pt")
+        last_path = os.path.join(self.output_dir, "checkpoint_last.pt")
+        path = best_path if os.path.exists(best_path) else last_path
         dep_args = [
             "--seed", str(self.seed),
             "--task", self.test_task,
-            "--path", os.path.join(self.output_dir, "checkpoint_best.pt")]
+            "--path", path]
         return self.BASE_TEST_ARGS + dep_args + self.test_args
 
     def run(self, try_different_ratio=False):
@@ -187,11 +189,45 @@ def run_imitate(i):
     with open(res_file, "wb") as f:
         pickle.dump(all_scores, f)
 
+def run_su_adapt_all(i):
+    all_scores = {}
+    run_supervised_adaptation(i, all_scores, use_base=True)
+    run_supervised_adaptation(i, all_scores, use_pe=True)
+    run_supervised_adaptation(i, all_scores, use_mt=True)
+    run_supervised_adaptation(i, all_scores, use_base=True, use_pe=True)
+    run_supervised_adaptation(i, all_scores, use_base=True, use_mt=True)
+    run_supervised_adaptation(i, all_scores, use_base=True, use_mt=True, use_pe=True)
+
+    # save results
+    print(all_scores)
+    res_file = os.path.join(RESULTS_DIR, f"result_su_adapt_{i}.pkl")
+    with open(res_file, "wb") as f:
+        pickle.dump(all_scores, f)
+
 def run_baseline(i, dict):
     id = "baseline"
     train_args = ["--lr", "5e-4", "--criterion", "label_smoothed_cross_entropy_post_edit",
         "--label-smoothing", "0.1", "--use-base-for-train", "--max-epoch", "40"]
     exp = Experiment(id, i, train_args=train_args)
+    dict.update(exp.run())
+
+def run_supervised_adaptation(i, dict, use_base=False, use_pe=False, use_mt=False):
+    assert use_base or use_pe or use_mt
+    base_model_path = os.path.join(BASE_DIR, "baseline", str(i), "checkpoint_best.pt")
+    id = "su_adapt"
+    train_args = ["--lr", "5e-4", "--criterion", "label_smoothed_cross_entropy_post_edit",
+        "--label-smoothing", "0.1", "--use-pe-for-eval"]
+    test_args = ["--use-pe-for-eval"]
+    if use_base:
+        train_args.append("--use-base-for-train")
+        id += "_base"
+    if use_pe:
+        train_args.append("--use-pe-for-train")
+        id += "_pe"
+    if use_mt:
+        train_args.append("--use-mt-for-train")
+        id += "_mt"
+    exp = Experiment(id, i, train_args=train_args, test_args=test_args, base_model_path=base_model_path)
     dict.update(exp.run())
 
 def run_reinforce_online(i, dict, use_clone_loss=True, use_beam_while_training=False, reward_scaler=50):
@@ -288,4 +324,4 @@ def run_ours_imitate(i, dict, use_clone_loss=True, use_beam_while_training=True,
 
 if __name__ == "__main__":
     os.environ["CUDA_VISIBLE_DEVICES"] = sys.argv[1]
-    run_offline(100 + int(sys.argv[1]))
+    run_su_adapt_all(100 + int(sys.argv[1]))
