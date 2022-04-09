@@ -2,6 +2,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from omegaconf import II
 
 from dataclasses import dataclass, field
 from fairseq.tasks import FairseqTask
@@ -36,6 +37,8 @@ class TranslationWithActorCriticConfig(TranslationConfig):
     )
     use_critic_generator: bool = field(default=False)
     critic_mix_ratio: float = field(default=0.5)
+    decoder_embed_d: int = field(default=512)
+
 
 @register_task("translation_with_actor_critic", dataclass=TranslationWithActorCriticConfig)
 class TranslationWithActorCritic(TranslationTask):
@@ -54,7 +57,7 @@ class TranslationWithActorCritic(TranslationTask):
                 self.base_model = FairseqTask.build_model(self, base_cfg.model)
                 self.base_model.load_state_dict(state["model"], model_cfg=base_cfg.model)
                 self.base_model.cuda()
-        self.vf = ValueEstimator(base_cfg.model.decoder_embed_dim, len(self.tgt_dict))
+        self.vf = ValueEstimator(cfg.decoder_embed_d, len(self.tgt_dict))
         self.cfg = cfg
 
     def build_model(self, cfg):

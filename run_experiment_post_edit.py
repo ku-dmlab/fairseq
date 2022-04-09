@@ -49,7 +49,7 @@ class Experiment():
     ]
 
     def __init__(self, exp_id, seed,
-                 train_args=None, test_args=None, base_model_path=None, task=None, max_tokens=4096):
+                 train_args=None, test_args=None, base_model_path=None, task=None, max_tokens=4096, no_base_model=False):
 
         self.exp_id = exp_id
         self.output_dir = os.path.join(BASE_DIR, exp_id, str(seed))
@@ -67,7 +67,7 @@ class Experiment():
         else:
             self.train_args += ["--patience", "100", "--validate-interval-updates", "100"]
             self.train_args += ["--restore-file", base_model_path]
-            if self.train_task != BASE_TASK:
+            if self.train_task != BASE_TASK and not no_base_model:
                 self.train_args += ["--base-model-path", base_model_path]
                 self.test_args += ["--base-model-path", base_model_path]
             if "post_edit" in self.train_task:
@@ -204,6 +204,19 @@ def run_su_adapt_all(i):
     with open(res_file, "wb") as f:
         pickle.dump(all_scores, f)
 
+def run_offline_adapt_all(i):
+    all_scores = {}
+    run_offline_adaptation(i, all_scores, tau=0.7)
+    run_offline_adaptation(i, all_scores, clone_offline=True, tau=0.7)
+    run_offline_adaptation(i, all_scores, base_reward_scale=1.0, tau=0.7)
+    run_offline_adaptation(i, all_scores, clone_offline=True, base_reward_scale=1.0, tau=0.7)
+
+    # save results
+    print(all_scores)
+    res_file = os.path.join(RESULTS_DIR, f"result_offline_adapt_{i}.pkl")
+    with open(res_file, "wb") as f:
+        pickle.dump(all_scores, f)
+
 def run_baseline(i, dict):
     id = "baseline"
     train_args = ["--lr", "5e-4", "--criterion", "label_smoothed_cross_entropy_post_edit",
@@ -229,6 +242,43 @@ def run_supervised_adaptation(i, dict, use_base=False, use_pe=False, use_mt=Fals
         id += "_mt"
     exp = Experiment(id, i, train_args=train_args, test_args=test_args, base_model_path=base_model_path)
     dict.update(exp.run())
+
+def run_offline_adaptation(i, dict, clone_base=True, clone_offline=False, clone_pe=True, clone_mt=True, base_reward_scale=0.5, alpha=None, tau=None):
+    base_model_path = os.path.join(BASE_DIR, "baseline", str(i), "checkpoint_best.pt")
+    TASK = "translation_with_actor_critic_post_edit_offline"
+    
+    id = "offline_adapt"
+    train_args = ["--lr", "5e-5", "--criterion", "actor_critic_post_edit", "--reset-optimizer", "--use-critic-generator",
+                  "--offline-data", f"data-bin/iwslt14.tokenized.offline.{i}.en-de", "--use-pe-for-eval"]
+    test_args = ["--use-critic-generator", "--use-pe-for-eval"]
+    # use beam
+    train_args.append("--use-beam-while-training")
+    train_args.extend(["--critic-mix-ratio", "0.5"])
+
+    if clone_base:
+        train_args.append("--clone-base")
+        id += "_cl_base"
+    if clone_pe:
+        train_args.append("--clone-pe")
+        id += "_cl_pe"
+    if clone_mt:
+        train_args.append("--clone-mt")
+        id += "_cl_mt"
+    if clone_offline:
+        train_args.append("--clone-offline")
+        id += "_cl_offline"
+    if alpha is not None:
+        train_args.extend(["--alpha", str(alpha)])
+        id += f"_alpha_{alpha}"
+    if tau is not None:
+        train_args.extend(["--tau", str(tau)])
+        id += f"_tau_{tau}"
+    train_args.extend(["--base-reward-scale", str(base_reward_scale)])
+    id += f"_brs_{base_reward_scale}"
+    
+    exp = Experiment(id, i, train_args=train_args, test_args=test_args, task=TASK, base_model_path=base_model_path, no_base_model=True)
+    dict.update(exp.run(try_different_ratio=True))
+
 
 def run_reinforce_online(i, dict, use_clone_loss=True, use_beam_while_training=False, reward_scaler=50):
     base_model_path = os.path.join(BASE_DIR, "baseline", str(i), "checkpoint_best.pt")
@@ -324,4 +374,4 @@ def run_ours_imitate(i, dict, use_clone_loss=True, use_beam_while_training=True,
 
 if __name__ == "__main__":
     os.environ["CUDA_VISIBLE_DEVICES"] = sys.argv[1]
-    run_su_adapt_all(100 + int(sys.argv[1]))
+    run_offline_adapt_all(100 + int(sys.argv[1]))
