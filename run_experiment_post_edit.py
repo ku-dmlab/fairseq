@@ -207,9 +207,6 @@ def run_su_adapt_all(i):
 def run_offline_adapt_all(i):
     all_scores = {}
     run_offline_adaptation(i, all_scores, tau=0.7)
-    run_offline_adaptation(i, all_scores, clone_offline=True, tau=0.7)
-    run_offline_adaptation(i, all_scores, base_reward_scale=1.0, tau=0.7)
-    run_offline_adaptation(i, all_scores, clone_offline=True, base_reward_scale=1.0, tau=0.7)
 
     # save results
     print(all_scores)
@@ -244,7 +241,7 @@ def run_supervised_adaptation(i, dict, use_base=False, use_pe=False, use_mt=Fals
     dict.update(exp.run())
 
 def run_offline_adaptation(i, dict, clone_base=True, clone_offline=False, clone_pe=True, clone_mt=True, base_reward_scale=0.5, alpha=None, tau=None):
-    base_model_path = os.path.join(BASE_DIR, "baseline", str(i), "checkpoint_best.pt")
+    base_model_path = os.path.join(BASE_DIR, "su_adapt_base_pe_mt", str(i), "checkpoint_best.pt")
     TASK = "translation_with_actor_critic_post_edit_offline"
     
     id = "offline_adapt"
@@ -254,6 +251,7 @@ def run_offline_adaptation(i, dict, clone_base=True, clone_offline=False, clone_
     # use beam
     train_args.append("--use-beam-while-training")
     train_args.extend(["--critic-mix-ratio", "0.5"])
+    train_args.append("--use-clone-loss")
 
     if clone_base:
         train_args.append("--clone-base")
@@ -276,7 +274,7 @@ def run_offline_adaptation(i, dict, clone_base=True, clone_offline=False, clone_
     train_args.extend(["--base-reward-scale", str(base_reward_scale)])
     id += f"_brs_{base_reward_scale}"
     
-    exp = Experiment(id, i, train_args=train_args, test_args=test_args, task=TASK, base_model_path=base_model_path, no_base_model=True)
+    exp = Experiment(id, i, train_args=train_args, test_args=test_args, task=TASK, base_model_path=base_model_path)
     dict.update(exp.run(try_different_ratio=True))
 
 

@@ -218,7 +218,7 @@ class ActorCriticCriterion(FairseqCriterion):
         avg_clone_loss = self._get_clone_loss(model, sample)
         
         if not self.use_clone_loss or do_not_clone:
-            avg_clone_loss = avg_clone_loss.detach()
+            avg_clone_loss = avg_clone_loss * 0
 
         avg_tot_loss = avg_rl_loss + avg_clone_loss
 
