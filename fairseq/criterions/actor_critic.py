@@ -11,7 +11,6 @@ from fairseq.criterions import FairseqCriterion, register_criterion
 from fairseq.dataclass import FairseqDataclass
 from fairseq.data.data_utils import collate_tokens
 from fairseq.tasks.translation_with_actor_critic_offline import TranslationWithActorCriticOffline
-from fairseq.tasks.translation_with_actor_critic_post_edit_offline import TranslationWithActorCriticPostEditOffline
 
 @dataclass
 class ActorCriticCriterionConfig(FairseqDataclass):
@@ -102,8 +101,7 @@ class ActorCriticCriterion(FairseqCriterion):
         return rewards
 
     def get_batch(self, model, base_sample):
-        if (isinstance(self.task, TranslationWithActorCriticPostEditOffline) 
-            or isinstance(self.task, TranslationWithActorCriticOffline)
+        if (isinstance(self.task, TranslationWithActorCriticOffline)
             or not torch.is_grad_enabled() or self.learn_imitate):
             # either offline RL / imitation, or
             # validtion: we do not produce additional samples for validation.

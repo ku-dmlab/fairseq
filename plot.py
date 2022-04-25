@@ -73,4 +73,37 @@ def hyper_plot():
     plt.tight_layout()
     plt.savefig("hyper_plot.png")
 
-hyper_plot()
+def mixed_plot():
+    baselines = [
+        [27.81, 27.97, 27.8, 28.08],
+        [27.78, 27.73, 27.71, 27.98],
+        [26.7, 26.65, 26.69, 26.7],
+        [22.89, 4.5, 4.35, 22.27]
+    ]
+    ours1 = [
+        [28.22, 28.21, 28.4, 28.48],
+        [28.19, 28.22, 28.16, 28.31],
+        [28.05, 28.12, 28.01, 28.21],
+        [27.84, 27.81, 27.76, 28.03]
+    ]
+    ours2 = [
+        [28.22, 28.21, 28.4, 28.48],
+        [27.85, 27.97, 27.86, 28.18],
+        [26.98, 27.16, 26.9, 27.39],
+        [22.87, 4.52, 4.27, 22.23]
+    ]
+    fig, ax = plt.subplots()
+    x = np.arange(len(baselines))
+    plt.errorbar(x, np.mean(baselines, axis=1), yerr=np.std(baselines, axis=1)/2*1.96, label="baseline")
+    plt.errorbar(x, np.mean(ours1, axis=1), yerr=np.std(ours1, axis=1)/2*1.96, label="agent 1")
+    plt.errorbar(x, np.mean(ours2, axis=1), yerr=np.std(ours2, axis=1)/2*1.96, label="agent 2")
+    plt.xticks(x, ["GT", "(5, 10, 15, 20, GT)", "(2, 5, 7, 10, GT)", "(1, 2, 3, 4, GT)"])
+
+    # Save the figure and show
+    plt.ylim(10)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig('mixed_plot.png')
+    #plt.show()
+
+mixed_plot()

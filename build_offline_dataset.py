@@ -62,8 +62,10 @@ def main(cfg, out_dir, tgt_pfx, data_key="base"):
         if use_cuda and not cfg.distributed_training.pipeline_model_parallel:
             model.cuda()
         model.prepare_for_inference_(cfg)
-
-    dataset = task.dataset(cfg.dataset.gen_subset).datasets[data_key]
+    if getattr(task.dataset(cfg.dataset.gen_subset), "datasets") is None:
+        dataset = task.dataset(cfg.dataset.gen_subset)
+    else:
+        dataset = task.dataset(cfg.dataset.gen_subset).datasets[data_key]
     indices = np.arange(len(dataset), dtype=np.int64)
     batch_sampler = dataset.batch_by_size(
         indices, max_tokens=cfg.dataset.max_tokens, max_sentences=cfg.dataset.batch_size,
@@ -127,19 +129,18 @@ def main(cfg, out_dir, tgt_pfx, data_key="base"):
     print("average_scores: ", np.average(scores))
     sample_ds.finalize(output_idx)
     np.save(score_bin, np.array(scores))
+    return np.average(scores)
 
-def get_cfg_and_run(seed):
+def get_cfg_and_run(seed, epoch="_best", model="baseline_wmt"):
     from fairseq import options
-
-    OUT_DIR = f"data-bin/iwslt14.tokenized.offline.{seed}.en-de"
+    
+    OUT_DIR = f"data-bin/wmt17.iwslt.offline_{model}{epoch}.{seed}.en-de"
     SRC_PFX = "train.en-de.en"
     TGT_PFX = "train.en-de.de"
     BASE_DIR = "/home/bjlee/mtrl_exps/"
-    BASE_DATA_DIR = "data-bin/iwslt14.tokenized.en-de"
+    BASE_DATA_DIR = "data-bin/wmt17.en-de.iwslt"
     BASE_TEST_ARGS = [
         BASE_DATA_DIR,
-        "--mt-data", "data-bin/iwslt14.tokenized.en-de.mt",
-        "--pe-data", "data-bin/iwslt14.tokenized.en-de.pe",
         "--batch-size", "128",
         "--beam", "5",
         "--remove-bpe",
@@ -149,8 +150,8 @@ def get_cfg_and_run(seed):
         "--eval-bleu-remove-bpe",
         "--eval-bleu-print-samples",
         "--seed", str(seed),
-        "--task", "translation_with_post_edit",
-        "--path", os.path.join(BASE_DIR, "baseline", str(seed), "checkpoint_best.pt")
+        "--task", "translation",
+        "--path", os.path.join(BASE_DIR, model, str(seed), f"checkpoint{epoch}.pt")
     ]
     sys.argv = [sys.argv[0]] + BASE_TEST_ARGS
     parser = options.get_generation_parser()
@@ -164,9 +165,13 @@ def get_cfg_and_run(seed):
             os.path.join(BASE_DATA_DIR, fname),
             os.path.join(OUT_DIR, fname))
 
-    main(args, out_dir=OUT_DIR, tgt_pfx=TGT_PFX)
+    return main(args, out_dir=OUT_DIR, tgt_pfx=TGT_PFX)
 
 
 if __name__ == "__main__":
-    os.environ["CUDA_VISIBLE_DEVICES"] = sys.argv[1]
-    get_cfg_and_run(100 + int(sys.argv[1]))
+    argv = sys.argv[1]
+    os.environ["CUDA_VISIBLE_DEVICES"] = argv
+    r1 = get_cfg_and_run(100 + int(argv), model="baseline_wmt")
+    sys.argv = [sys.argv[0], argv]
+    r2 = get_cfg_and_run(100 + int(argv), model="su_adapt")
+    print(r1, r2)

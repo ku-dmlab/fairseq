@@ -11,20 +11,17 @@ PYTHON_PATH = "/home/bjlee/miniconda3/bin/python"
 PROJECT_PATH = "/home/bjlee/fairseq/"
 NUM_SEEDS = 1
 BASE_DIR = "/home/bjlee/mtrl_exps/" # should be changed to the directory to store things
-BASE_TASK = "translation_with_post_edit"
-AC_TASK = "translation_with_actor_critic_post_edit"
+BASE_TASK = "translation"
+AC_TASK = "translation_with_actor_critic"
 SAMPLES_DIR = os.path.join(BASE_DIR, "samples")
 RESULTS_DIR = os.path.join(BASE_DIR, "results")
 os.makedirs(SAMPLES_DIR, exist_ok=True)
 os.makedirs(RESULTS_DIR, exist_ok=True)
+training_critic_mix_ratio = 1000
 
 
 class Experiment():
-    POST_EDIT_ARGS = [
-        "--mt-data", "data-bin/iwslt14.tokenized.en-de.mt",
-        "--pe-data", "data-bin/iwslt14.tokenized.en-de.pe"]
     BASE_TRAIN_ARGS = [
-        "data-bin/iwslt14.tokenized.en-de",
         "--arch", "transformer_iwslt_de_en",
         "--share-decoder-input-output-embed",
         "--optimizer", "adam",
@@ -40,17 +37,18 @@ class Experiment():
         "--eval-bleu-remove-bpe",
         "--eval-bleu-print-samples",
         "--best-checkpoint-metric", "bleu",
+        "--no-epoch-checkpoints",
         "--maximize-best-checkpoint-metric"]
     BASE_TEST_ARGS = [
-        "data-bin/iwslt14.tokenized.en-de",
         "--batch-size", "128",
         "--beam", "5",
         "--remove-bpe"
     ]
 
     def __init__(self, exp_id, seed,
-                 train_args=None, test_args=None, base_model_path=None, task=None, max_tokens=4096, no_base_model=False):
-
+                 train_args=None, test_args=None, base_model_path=None, task=None, max_tokens=4096, no_base_model=False,
+                 data_path="data-bin/iwslt14.tokenized.en-de"):
+        self.data_path = data_path
         self.exp_id = exp_id
         self.output_dir = os.path.join(BASE_DIR, exp_id, str(seed))
         os.makedirs(self.output_dir, exist_ok=True)
@@ -63,16 +61,13 @@ class Experiment():
 
         self.train_args += ["--max-tokens", str(max_tokens)]
         if base_model_path is None:
-            self.train_args += ["--patience", "10"]
+            self.train_args += ["--patience", "3"]
         else:
-            self.train_args += ["--patience", "100", "--validate-interval-updates", "100"]
+            self.train_args += ["--patience", "30", "--validate-interval-updates", "300"]
             self.train_args += ["--restore-file", base_model_path]
             if self.train_task != BASE_TASK and not no_base_model:
                 self.train_args += ["--base-model-path", base_model_path]
                 self.test_args += ["--base-model-path", base_model_path]
-            if "post_edit" in self.train_task:
-                self.train_args += self.POST_EDIT_ARGS
-                self.test_args += self.POST_EDIT_ARGS
 
     def get_train_args(self):
         dep_args = [
@@ -81,7 +76,7 @@ class Experiment():
             "--save-dir", self.output_dir,
             "--log-file", os.path.join(self.output_dir, "log"),
             "--tensorboard-logdir", self.output_dir]
-        return self.BASE_TRAIN_ARGS + dep_args + self.train_args
+        return [self.data_path] + self.BASE_TRAIN_ARGS + dep_args + self.train_args
 
     def get_test_args(self):
         best_path = os.path.join(self.output_dir, "checkpoint_best.pt")
@@ -91,7 +86,7 @@ class Experiment():
             "--seed", str(self.seed),
             "--task", self.test_task,
             "--path", path]
-        return self.BASE_TEST_ARGS + dep_args + self.test_args
+        return [self.data_path] + self.BASE_TEST_ARGS + dep_args + self.test_args
 
     def run(self, try_different_ratio=False):
         # subprocess call is requried to train multiple models without interference
@@ -115,7 +110,7 @@ class Experiment():
             return {self.exp_id: test()}
         else:
             ret_dict = {}
-            for ratio in [5.0, 2.5, 1.0, 0.5, 0.25, 0.1, 0.05]:
+            for ratio in [1000.0, 1.0, 0.5, 0.25, 0.01]:
                 ret_dict[f"{self.exp_id}_{ratio}"] = test(ratio)
             return ret_dict
 
@@ -189,14 +184,19 @@ def run_imitate(i):
     with open(res_file, "wb") as f:
         pickle.dump(all_scores, f)
 
+def run_baseline_wmt(i, dict):
+    id = "baseline_wmt"
+    train_args = ["--lr", "5e-4", "--criterion", "label_smoothed_cross_entropy",
+        "--label-smoothing", "0.1", "--max-epoch", "40"]
+    exp = Experiment(id, i, train_args=train_args, data_path="data-bin/wmt17.en-de")
+    dict.update(exp.run())
+
 def run_su_adapt_all(i):
     all_scores = {}
-    run_supervised_adaptation(i, all_scores, use_base=True)
-    run_supervised_adaptation(i, all_scores, use_pe=True)
-    run_supervised_adaptation(i, all_scores, use_mt=True)
-    run_supervised_adaptation(i, all_scores, use_base=True, use_pe=True)
-    run_supervised_adaptation(i, all_scores, use_base=True, use_mt=True)
-    run_supervised_adaptation(i, all_scores, use_base=True, use_mt=True, use_pe=True)
+    #run_baseline_wmt(i, all_scores)
+    #run_supervised_adaptation(i, all_scores)
+    run_offline_adaptation(i, all_scores, alpha=1.0, tau=0.7)
+    run_offline_adaptation(i, all_scores, model="su_adapt", alpha=1.0, tau=0.7)
 
     # save results
     print(all_scores)
@@ -206,7 +206,11 @@ def run_su_adapt_all(i):
 
 def run_offline_adapt_all(i):
     all_scores = {}
-    run_offline_adaptation(i, all_scores, tau=0.7)
+    run_offline_adaptation(i, all_scores)
+    run_offline_adaptation(i, all_scores, clone_pe=True)
+    run_offline_adaptation(i, all_scores, clone_pe=True, clone_mt=True)
+    # alpha = {100:0, 101:0.03, 102:0.1, 103:0.3}
+    # run_offline_adaptation(100, all_scores, alpha=alpha[i], clone_pe=True)
 
     # save results
     print(all_scores)
@@ -221,60 +225,40 @@ def run_baseline(i, dict):
     exp = Experiment(id, i, train_args=train_args)
     dict.update(exp.run())
 
-def run_supervised_adaptation(i, dict, use_base=False, use_pe=False, use_mt=False):
-    assert use_base or use_pe or use_mt
-    base_model_path = os.path.join(BASE_DIR, "baseline", str(i), "checkpoint_best.pt")
+def run_supervised_adaptation(i, dict, use_wmt=False):
+    base_model_path = os.path.join(BASE_DIR, "baseline_wmt", str(i), "checkpoint_best.pt")
     id = "su_adapt"
-    train_args = ["--lr", "5e-4", "--criterion", "label_smoothed_cross_entropy_post_edit",
-        "--label-smoothing", "0.1", "--use-pe-for-eval"]
-    test_args = ["--use-pe-for-eval"]
-    if use_base:
-        train_args.append("--use-base-for-train")
-        id += "_base"
-    if use_pe:
-        train_args.append("--use-pe-for-train")
-        id += "_pe"
-    if use_mt:
-        train_args.append("--use-mt-for-train")
-        id += "_mt"
-    exp = Experiment(id, i, train_args=train_args, test_args=test_args, base_model_path=base_model_path)
+    train_args = ["--lr", "5e-4", "--criterion", "label_smoothed_cross_entropy",
+        "--label-smoothing", "0.1"]
+    data_path = "data-bin/wmt17.en-de.iwslt"
+    if use_wmt:
+        data_path = "data-bin/wmt17.en-de.iwslt:data-bin/wmt17.en-de"
+        id += "_wmt"
+    exp = Experiment(id, i, train_args=train_args, data_path=data_path, base_model_path=base_model_path)
     dict.update(exp.run())
 
-def run_offline_adaptation(i, dict, clone_base=True, clone_offline=False, clone_pe=True, clone_mt=True, base_reward_scale=0.5, alpha=None, tau=None):
-    base_model_path = os.path.join(BASE_DIR, "su_adapt_base_pe_mt", str(i), "checkpoint_best.pt")
-    TASK = "translation_with_actor_critic_post_edit_offline"
+def run_offline_adaptation(i, dict, model="baseline_wmt", alpha=None, tau=None):
+    base_model_path = os.path.join(BASE_DIR, model, str(i), "checkpoint_best.pt")
+    TASK = "translation_with_actor_critic"
     
-    id = "offline_adapt"
-    train_args = ["--lr", "5e-5", "--criterion", "actor_critic_post_edit", "--reset-optimizer", "--use-critic-generator",
-                  "--offline-data", f"data-bin/iwslt14.tokenized.offline.{i}.en-de", "--use-pe-for-eval"]
-    test_args = ["--use-critic-generator", "--use-pe-for-eval"]
+    id = f"offline_adapt_{model}"
+    train_args = ["--lr", "5e-5", "--criterion", "actor_critic_offline", "--reset-optimizer", "--use-critic-generator",
+                  "--offline-data", f"data-bin/wmt17.iwslt.offline_{model}.{i}.en-de"]
+    test_args = ["--use-critic-generator"]
     # use beam
     train_args.append("--use-beam-while-training")
-    train_args.extend(["--critic-mix-ratio", "0.5"])
+    train_args.extend(["--critic-mix-ratio", str(training_critic_mix_ratio)])
     train_args.append("--use-clone-loss")
 
-    if clone_base:
-        train_args.append("--clone-base")
-        id += "_cl_base"
-    if clone_pe:
-        train_args.append("--clone-pe")
-        id += "_cl_pe"
-    if clone_mt:
-        train_args.append("--clone-mt")
-        id += "_cl_mt"
-    if clone_offline:
-        train_args.append("--clone-offline")
-        id += "_cl_offline"
     if alpha is not None:
         train_args.extend(["--alpha", str(alpha)])
         id += f"_alpha_{alpha}"
     if tau is not None:
         train_args.extend(["--tau", str(tau)])
         id += f"_tau_{tau}"
-    train_args.extend(["--base-reward-scale", str(base_reward_scale)])
-    id += f"_brs_{base_reward_scale}"
-    
-    exp = Experiment(id, i, train_args=train_args, test_args=test_args, task=TASK, base_model_path=base_model_path)
+
+    data_path = "data-bin/wmt17.en-de.iwslt"    
+    exp = Experiment(id, i, train_args=train_args, test_args=test_args, task=TASK, base_model_path=base_model_path, data_path=data_path)
     dict.update(exp.run(try_different_ratio=True))
 
 
@@ -306,7 +290,7 @@ def run_ours_online(i, dict, use_clone_loss=True, use_beam_while_training=True, 
         id += "_clone"
     if use_beam_while_training:
         train_args.append("--use-beam-while-training")
-        train_args.extend(["--critic-mix-ratio", "0.5"])
+        train_args.extend(["--critic-mix-ratio", str(training_critic_mix_ratio)])
         id += "_beam"
     if alpha is not None:
         train_args.extend(["--alpha", str(alpha)])
@@ -320,20 +304,23 @@ def run_ours_online(i, dict, use_clone_loss=True, use_beam_while_training=True, 
     exp = Experiment(id, i, train_args=train_args, test_args=test_args, task=AC_TASK, base_model_path=base_model_path)
     dict.update(exp.run(try_different_ratio=True))
 
-def run_ours_offline(i, dict, use_clone_loss=True, use_beam_while_training=True, reward_scaler=50, alpha=None, tau=None):
-    base_model_path = os.path.join(BASE_DIR, "baseline", str(i), "checkpoint_best.pt")
+def run_ours_offline(i, dict, epochs, use_clone_loss=True, use_beam_while_training=True, reward_scaler=50, alpha=None, tau=None):
+    base_model_path = os.path.join(BASE_DIR, "baseline_" + ",".join(epochs), str(i), "checkpoint_best.pt")
     TASK = "translation_with_actor_critic_offline"
-    
-    id = "ours_offline"
+
+    offline_data = [f"data-bin/iwslt14.tokenized.offline_{e}.{i}.en-de" for e in epochs]
+    offline_data = ",".join(offline_data)
+
+    id = "offline_nobase_" + ",".join(epochs)
     train_args = ["--lr", "5e-5", "--criterion", "actor_critic_offline", "--reset-optimizer", "--use-critic-generator",
-                  "--offline-data", f"data-bin/iwslt14.tokenized.offline.{i}.en-de"]
+                  "--offline-data", offline_data]
     test_args = ["--use-critic-generator"]
     if use_clone_loss:
         train_args.append("--use-clone-loss")
         id += "_clone"
     if use_beam_while_training:
         train_args.append("--use-beam-while-training")
-        train_args.extend(["--critic-mix-ratio", "0.5"])
+        train_args.extend(["--critic-mix-ratio", str(training_critic_mix_ratio)])
         id += "_beam"
     if alpha is not None:
         train_args.extend(["--alpha", str(alpha)])
@@ -344,7 +331,7 @@ def run_ours_offline(i, dict, use_clone_loss=True, use_beam_while_training=True,
     train_args.extend(["--reward-scaler", str(reward_scaler)])
     id += f"_reward_{reward_scaler}"
     
-    exp = Experiment(id, i, train_args=train_args, test_args=test_args, task=TASK, base_model_path=base_model_path)
+    exp = Experiment(id, i, train_args=train_args, test_args=test_args, task=TASK)#, base_model_path=base_model_path)
     dict.update(exp.run(try_different_ratio=True))
 
 def run_ours_imitate(i, dict, use_clone_loss=True, use_beam_while_training=True, reward_scaler=50, alpha=None):
@@ -358,7 +345,7 @@ def run_ours_imitate(i, dict, use_clone_loss=True, use_beam_while_training=True,
         id += "_clone"
     if use_beam_while_training:
         train_args.append("--use-beam-while-training")
-        train_args.extend(["--critic-mix-ratio", "0.5"])
+        train_args.extend(["--critic-mix-ratio", str(training_critic_mix_ratio)])
         id += "_beam"
     if alpha is not None:
         train_args.extend(["--alpha", str(alpha)])
@@ -372,4 +359,4 @@ def run_ours_imitate(i, dict, use_clone_loss=True, use_beam_while_training=True,
 
 if __name__ == "__main__":
     os.environ["CUDA_VISIBLE_DEVICES"] = sys.argv[1]
-    run_offline_adapt_all(100 + int(sys.argv[1]))
+    run_su_adapt_all(100 + int(sys.argv[1]))

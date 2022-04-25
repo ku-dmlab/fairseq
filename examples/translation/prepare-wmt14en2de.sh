@@ -122,6 +122,7 @@ BPE_CODE=$prep/code
 rm -f $TRAIN
 for l in $src $tgt; do
     cat $tmp/train.$l >> $TRAIN
+    cat iwslt14.tokenized.de-en/train.$l >> $TRAIN
 done
 
 echo "learn_bpe.py on ${TRAIN}..."
@@ -132,11 +133,18 @@ for L in $src $tgt; do
         echo "apply_bpe.py to ${f}..."
         python $BPEROOT/apply_bpe.py -c $BPE_CODE < $tmp/$f > $tmp/bpe.$f
     done
+    for f in train.$L valid.$L test.$L; do
+        echo "apply_bpe.py to ${f}..."
+        python $BPEROOT/apply_bpe.py -c $BPE_CODE < iwslt14.tokenized.de-en/$f > $tmp/bpe_iwslt.$f
+    done
 done
 
 perl $CLEAN -ratio 1.5 $tmp/bpe.train $src $tgt $prep/train 1 250
 perl $CLEAN -ratio 1.5 $tmp/bpe.valid $src $tgt $prep/valid 1 250
+perl $CLEAN -ratio 1.5 $tmp/bpe_iwslt.train $src $tgt $prep/train_iwslt 1 250
+perl $CLEAN -ratio 1.5 $tmp/bpe_iwslt.valid $src $tgt $prep/valid_iwslt 1 250
 
 for L in $src $tgt; do
     cp $tmp/bpe.test.$L $prep/test.$L
+    cp $tmp/bpe_iwslt.test.$L $prep/test_iwslt.$L
 done
