@@ -38,6 +38,8 @@ class TranslationWithActorCriticConfig(TranslationConfig):
     use_critic_generator: bool = field(default=False)
     critic_mix_ratio: float = field(default=0.5)
     decoder_embed_d: int = field(default=512)
+    normalize_value: bool = field(default=False)
+    subtract_value: bool = field(default=False)
 
 
 @register_task("translation_with_actor_critic", dataclass=TranslationWithActorCriticConfig)
@@ -45,7 +47,6 @@ class TranslationWithActorCritic(TranslationTask):
 
     def __init__(self, cfg, src_dict, tgt_dict):
         super().__init__(cfg, src_dict, tgt_dict)
-        self.vf_init_state_dict = None
         self.base_model = None
         if cfg.base_model_path:
             state = load_checkpoint_to_cpu(cfg.base_model_path)
@@ -57,15 +58,7 @@ class TranslationWithActorCritic(TranslationTask):
                 self.base_model = FairseqTask.build_model(self, base_cfg.model)
                 self.base_model.load_state_dict(state["model"], model_cfg=base_cfg.model)
                 self.base_model.cuda()
-        self.vf = ValueEstimator(cfg.decoder_embed_d, len(self.tgt_dict))
         self.cfg = cfg
-
-    def build_model(self, cfg):
-        model = super().build_model(cfg)
-        model.vf = self.vf
-        if self.vf_init_state_dict is not None:
-            self.vf.load_state_dict(self.vf_init_state_dict)
-        return model
 
     def train_step(
         self, sample, model, criterion, optimizer, update_num, ignore_grad=False
@@ -81,23 +74,21 @@ class TranslationWithActorCritic(TranslationTask):
             optimizer.backward(loss)
         return loss, sample_size, logging_output
 
-    def state_dict(self):
-        return self.vf.state_dict()
-
-    def load_state_dict(self, state_dict):
-        self.vf_init_state_dict = state_dict
-    
     def build_generator(
         self, models, args, seq_gen_cls=None, extra_gen_cls_kwargs=None, prefix_allowed_tokens_fn=None,
     ):
         if self.cfg.use_critic_generator and not getattr(args, "sampling", False):
             if self.base_model is not None:
                 print("USING BASE MODEL")
-                models = [self.base_model.cuda()]
+                base_models = [self.base_model.cuda()]
+            else:
+                base_models = models
             if extra_gen_cls_kwargs is None:
                 extra_gen_cls_kwargs = {}
-            extra_gen_cls_kwargs["vf"] = self.vf
+            extra_gen_cls_kwargs["vf"] = models
             extra_gen_cls_kwargs["critic_mix_ratio"] = self.cfg.critic_mix_ratio
-            return super().build_generator(models, args, CriticSequenceGenerator, extra_gen_cls_kwargs, prefix_allowed_tokens_fn)
+            extra_gen_cls_kwargs["normalize_value"] = self.cfg.normalize_value
+            extra_gen_cls_kwargs["subtract_value"] = self.cfg.subtract_value
+            return super().build_generator(base_models, args, CriticSequenceGenerator, extra_gen_cls_kwargs, prefix_allowed_tokens_fn)
         else:
             return super().build_generator(models, args, seq_gen_cls, extra_gen_cls_kwargs, prefix_allowed_tokens_fn)

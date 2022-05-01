@@ -62,29 +62,40 @@ class TranslationWithActorCriticOffline(TranslationWithActorCritic):
                 shuffle=(split != "test"),
                 pad_to_multiple=self.cfg.required_seq_len_multiple,
             )
+            
         if split == "train":
             base_dataset = get_langpair_dataset(self.cfg.data)
-            base_dataset = ScoredLanguagePairDataset(
-                base_dataset, np.ones(len(base_dataset)) * 100.0)
-            datasets = [base_dataset]
+            offline_dataset = get_langpair_dataset(self.cfg.offline_data)
+            offline_dataset = ScoredLanguagePairDataset(
+                offline_dataset, os.path.join(self.cfg.offline_data, "score.npy"))
 
-            if isinstance(self.offline_data, list):
-                datasets = []
-                for each in self.offline_data:
-                    offline_dataset = get_langpair_dataset(each)
-                    offline_dataset = ScoredLanguagePairDataset(
-                        offline_dataset, os.path.join(each, "score.npy"))
-                    datasets.append(offline_dataset)
-
-            else:
-                offline_dataset = get_langpair_dataset(self.offline_data)
-                offline_dataset = ScoredLanguagePairDataset(
-                    offline_dataset, os.path.join(self.offline_data, "score.npy"))
-                datasets.append(offline_dataset)
-
-            self.datasets[split] = ConcatDataset(datasets)
+            self.datasets[split] = RoundRobinZipDatasets(
+                OrderedDict(base=base_dataset, offline=offline_dataset))
         else:
             self.datasets[split] = get_langpair_dataset(self.cfg.data)
+        # if split == "train":
+        #     base_dataset = get_langpair_dataset(self.cfg.data)
+        #     base_dataset = ScoredLanguagePairDataset(
+        #         base_dataset, np.ones(len(base_dataset)) * 100.0)
+        #     datasets = [base_dataset]
+
+        #     if isinstance(self.offline_data, list):
+        #         datasets = []
+        #         for each in self.offline_data:
+        #             offline_dataset = get_langpair_dataset(each)
+        #             offline_dataset = ScoredLanguagePairDataset(
+        #                 offline_dataset, os.path.join(each, "score.npy"))
+        #             datasets.append(offline_dataset)
+
+        #     else:
+        #         offline_dataset = get_langpair_dataset(self.offline_data)
+        #         offline_dataset = ScoredLanguagePairDataset(
+        #             offline_dataset, os.path.join(self.offline_data, "score.npy"))
+        #         datasets.append(offline_dataset)
+
+        #     self.datasets[split] = ConcatDataset(datasets)
+        # else:
+        #     self.datasets[split] = get_langpair_dataset(self.cfg.data)
 
 class ScoredLanguagePairDataset(LanguagePairDataset):
     def __init__(self, lang_pair_dataset, score_path):

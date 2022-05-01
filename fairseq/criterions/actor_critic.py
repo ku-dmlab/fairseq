@@ -41,8 +41,6 @@ class ActorCriticCriterion(FairseqCriterion):
         self.detach_actor = cfg.detach_actor
         self.reward_scaler = cfg.reward_scaler
         self.generator = None
-        self.vf = None
-        self.vf_optimizer = None
         self.learn_imitate = cfg.learn_imitate
         if self.learn_imitate:
             self.tau = 0.5 # fix tau to be 0.5 in case of imitaion
@@ -142,8 +140,8 @@ class ActorCriticCriterion(FairseqCriterion):
         del hypos
         return num_hypos, num_samples, rewards, vinputs, vtargets
 
-    def _get_critic_loss(self, model, out_features, vtargets, shape, rewards, without_residual_loss):
-        value = model.vf(out_features.detach()) if self.detach_actor else model.vf(out_features)
+    def _get_critic_loss(self, value, vtargets, shape, rewards, without_residual_loss, do_not_clone):
+        #value = model.vf(out_features.detach()) if self.detach_actor else model.vf(out_features)
         cur_v_star = torch.logsumexp(value, dim=2, keepdim=True).view(*shape)
         cur_q = torch.gather(value, 2, vtargets[:, :, None]).view(*shape)
 
@@ -156,9 +154,9 @@ class ActorCriticCriterion(FairseqCriterion):
                 residual = residual * 0.
 
         critic_loss = 0.5 * residual.pow(2) * torch.abs(self.tau - torch.less(residual, 0).float())
-        critic_loss += self.alpha * (cur_v_star - cur_q)
+        if not do_not_clone:
+            critic_loss = critic_loss + self.alpha * (cur_v_star - cur_q)
         return critic_loss, cur_q - cur_v_star
-
     def _get_clone_loss(self, model, sample):
         orig_output = model(**sample["net_input"])
         orig_lprobs = model.get_normalized_probs(orig_output, log_probs=True)
@@ -166,6 +164,7 @@ class ActorCriticCriterion(FairseqCriterion):
         target = model.get_targets(sample, orig_output).view(-1)
         return F.nll_loss(orig_lprobs, target, ignore_index=self.pad_idx)
 
+    """
     def _get_actor_loss(self, model, out_features, vtargets, shape, rewards, subtract_mean=True):
         net_output = [model.output_layer(out_features)]
         lprobs = model.get_normalized_probs(net_output, log_probs=True)
@@ -174,7 +173,7 @@ class ActorCriticCriterion(FairseqCriterion):
             rewards = rewards - rewards.mean(1, keepdim=True)
         del lprobs
         return - (score * rewards.detach())
-
+    """
     def _average_loss(self, loss, non_pad_mask, batch_tokens):
         return torch.sum(loss[non_pad_mask]) / batch_tokens
 
@@ -199,7 +198,7 @@ class ActorCriticCriterion(FairseqCriterion):
             rewards = torch.Tensor(rewards).cuda()
         rewards = rewards.view(*shape) / reward_scaler
         
-        out_features = model(**vinputs, features_only=True)[0]
+        values = model(**vinputs)[0]
 
         if self.use_reinforce:
             policy_loss = self._get_actor_loss(model, out_features, vtargets, shape, rewards)
@@ -210,7 +209,7 @@ class ActorCriticCriterion(FairseqCriterion):
             avg_rl_loss = self._average_loss(policy_loss, non_pad_mask, batch_tokens)
             avg_rl_loss += self._average_loss(critic_loss, non_pad_mask, batch_tokens)
         else:
-            critic_loss, _ = self._get_critic_loss(model, out_features, vtargets, shape, rewards, without_residual_loss)
+            critic_loss, _ = self._get_critic_loss(values, vtargets, shape, rewards, without_residual_loss, do_not_clone)
             avg_rl_loss = self._average_loss(critic_loss, non_pad_mask, batch_tokens)
 
         avg_clone_loss = self._get_clone_loss(model, sample)
@@ -218,15 +217,16 @@ class ActorCriticCriterion(FairseqCriterion):
         if not self.use_clone_loss or do_not_clone:
             avg_clone_loss = avg_clone_loss * 0
 
-        avg_tot_loss = avg_rl_loss + avg_clone_loss
+        #avg_tot_loss = avg_rl_loss + avg_clone_loss
+        avg_tot_loss = avg_rl_loss
 
         logging_output = {
             'loss': utils.item(avg_tot_loss.data),
-            'clone_loss': utils.item(avg_clone_loss.data),
+            #'clone_loss': utils.item(avg_clone_loss.data),
             'rl_loss': utils.item(avg_rl_loss.data),
             'ntokens': batch_tokens,
         }
-        del out_features, vtargets, vinputs, rewards
+        del vtargets, vinputs, rewards
         return avg_tot_loss, batch_tokens, logging_output
 
     @classmethod

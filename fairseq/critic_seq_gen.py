@@ -2,7 +2,7 @@
 import copy
 import torch
 import torch.nn as nn
-from fairseq.sequence_generator import SequenceGenerator
+from fairseq.sequence_generator import SequenceGenerator, EnsembleModel
 
 import math
 from typing import Dict, List, Optional
@@ -20,9 +20,13 @@ class CriticSequenceGenerator(SequenceGenerator):
     def __init__(self, *args, **kwargs):
         vf = kwargs.pop("vf")
         critic_mix_ratio = kwargs.pop("critic_mix_ratio")
+        normalize_value = kwargs.pop("normalize_value")
+        subtract_value = kwargs.pop("subtract_value")
         super().__init__(*args, **kwargs)
-        self.vf = vf
+        self.vf = EnsembleModel(vf)
         self.critic_mix_ratio = critic_mix_ratio
+        self.normalize_value = normalize_value
+        self.subtract_value = subtract_value
 
     def _generate(
         self,
@@ -36,6 +40,13 @@ class CriticSequenceGenerator(SequenceGenerator):
             [
                 torch.jit.annotate(Dict[str, Dict[str, Optional[Tensor]]], {})
                 for i in range(self.model.models_size)
+            ],
+        )
+        vf_incremental_states = torch.jit.annotate(
+            List[Dict[str, Dict[str, Optional[Tensor]]]],
+            [
+                torch.jit.annotate(Dict[str, Dict[str, Optional[Tensor]]], {})
+                for i in range(self.vf.models_size)
             ],
         )
         net_input = sample["net_input"]
@@ -88,6 +99,17 @@ class CriticSequenceGenerator(SequenceGenerator):
             self.min_len <= max_len
         ), "min_len cannot be larger than max_len, please adjust these!"
         # compute the encoder output for each beam
+        
+        with torch.autograd.profiler.record_function("EnsembleModel: forward_encoder"):
+            vf_encoder_outs = self.vf.forward_encoder(net_input)
+
+        # placeholder of indices for bsz * beam_size to hold tokens and accumulative scores
+        new_order = torch.arange(bsz).view(-1, 1).repeat(1, beam_size).view(-1)
+        new_order = new_order.to(src_tokens.device).long()
+        vf_encoder_outs = self.vf.reorder_encoder_out(vf_encoder_outs, new_order)
+        # ensure encoder_outs is a List.
+        assert vf_encoder_outs is not None
+
         with torch.autograd.profiler.record_function("EnsembleModel: forward_encoder"):
             encoder_outs = self.model.forward_encoder(net_input)
 
@@ -166,26 +188,35 @@ class CriticSequenceGenerator(SequenceGenerator):
                 encoder_outs = self.model.reorder_encoder_out(
                     encoder_outs, reorder_state
                 )
+                self.vf.reorder_incremental_state(vf_incremental_states, reorder_state)
+                vf_encoder_outs = self.vf.reorder_encoder_out(
+                    vf_encoder_outs, reorder_state
+                )
             ####
-
-            lprobs, avg_attn_scores = self._get_lprobs(tokens[:, : step + 1],
-                    encoder_outs,
-                    incremental_states)
-
-            cur_states = copy.deepcopy(incremental_states)
-            out_features, _ = self.model.models[0].decoder.forward(
+            values, _ = self.vf.models[0].decoder.forward(
                 tokens[:, : step + 1],
-                encoder_out=encoder_outs[0],
-                incremental_state=cur_states[0],
-                features_only=True
+                encoder_out=vf_encoder_outs[0],
+                incremental_state=vf_incremental_states[0])
+            values = values[:, -1] 
+            if self.normalize_value:
+                values = torch.log_softmax(values/ self.temperature, dim=-1)
+            """
+            values, _ = self.vf.forward_decoder(
+                tokens[:, : step + 1],
+                vf_encoder_outs,
+                vf_incremental_states,
+                self.temperature,
             )
-
-            values = self.vf(out_features)[:, -1]
+            """
             ####
 
             lprobs, avg_attn_scores = self._get_lprobs(tokens[:, : step + 1],
                     encoder_outs,
                     incremental_states)
+            denom = (1 + self.critic_mix_ratio)
+            lprobs = lprobs / denom
+            values = values * self.critic_mix_ratio / denom
+            lprobs = lprobs + values
 
             if self.lm_model is not None:
                 lm_out = self.lm_model(tokens[:, : step + 1])
@@ -242,11 +273,14 @@ class CriticSequenceGenerator(SequenceGenerator):
             # Shape: (batch, cand_size)
             cand_scores, cand_indices, cand_beams = self.search.step(
                 step,
-                lprobs.view(bsz, -1, self.vocab_size) + values.view(bsz, -1, self.vocab_size) * self.critic_mix_ratio,
+                lprobs.view(bsz, -1, self.vocab_size),
                 scores.view(bsz, beam_size, -1)[:, :, :step],
                 tokens[:, : step + 1],
                 original_batch_idxs,
             )
+            if self.subtract_value:
+                cand_values = torch.gather(values.view(bsz, -1), 1, cand_indices + cand_beams * values.shape[1])
+                cand_scores = cand_scores - cand_values
 
             # cand_bbsz_idx contains beam indices for the top candidate
             # hypotheses, with a range of values: [0, bsz*beam_size),
