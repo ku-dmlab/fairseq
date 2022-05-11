@@ -62,7 +62,7 @@ def main(cfg, out_dir, tgt_pfx, data_key="base"):
         if use_cuda and not cfg.distributed_training.pipeline_model_parallel:
             model.cuda()
         model.prepare_for_inference_(cfg)
-    if getattr(task.dataset(cfg.dataset.gen_subset), "datasets") is None:
+    if getattr(task.dataset(cfg.dataset.gen_subset), "datasets", None) is None:
         dataset = task.dataset(cfg.dataset.gen_subset)
     else:
         dataset = task.dataset(cfg.dataset.gen_subset).datasets[data_key]

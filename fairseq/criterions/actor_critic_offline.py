@@ -7,13 +7,13 @@ from fairseq.criterions.actor_critic import ActorCriticCriterion, ActorCriticCri
 )
 class ActorCriticOfflineCriterion(ActorCriticCriterion):
 
-    def forward(self, model, sample, reduce=True):
+    def forward(self, model, sample, update_num=0):
         if "base" not in sample:
-            return super().forward(model, sample, reduce)
+            return super().forward(model, sample, update_num)
         base_ret = super().forward(
-            model, sample["base"], reduce)
+            model, sample["base"], update_num)
         offline_ret = super().forward(
-            model, sample["offline"], reduce, do_not_clone=True)
+            model, sample["offline"], update_num, do_not_clone=True)
         all_returns = [base_ret, offline_ret]
 
         loss = sum([each[0] for each in all_returns])

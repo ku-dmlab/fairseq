@@ -18,12 +18,14 @@ class ActorCriticCriterionConfig(FairseqDataclass):
     use_beam_while_training: bool = field(default=False)
     use_reinforce: bool = field(default=False)
     use_ac: bool = field(default=False)
-    use_clone_loss: bool = field(default=False)
     alpha: float = field(default=1.0)
     tau: float = field(default=0.9)
     detach_actor: bool = field(default=False)
-    reward_scaler: float = field(default=50.)
+    reward_scaler: float = field(default=100.)
     learn_imitate: bool = field(default=False)
+    target_learning_rate: float = field(default=0.001)
+    use_pcl: bool = field(default=False)
+    use_iql: bool = field(default=False)
 
 @register_criterion(
     "actor_critic", dataclass=ActorCriticCriterionConfig
@@ -35,7 +37,6 @@ class ActorCriticCriterion(FairseqCriterion):
         self.use_beam_while_training = cfg.use_beam_while_training
         self.use_reinforce = cfg.use_reinforce
         self.use_ac = cfg.use_ac
-        self.use_clone_loss = cfg.use_clone_loss
         self.alpha = cfg.alpha
         self.tau = cfg.tau
         self.detach_actor = cfg.detach_actor
@@ -44,6 +45,9 @@ class ActorCriticCriterion(FairseqCriterion):
         self.learn_imitate = cfg.learn_imitate
         if self.learn_imitate:
             self.tau = 0.5 # fix tau to be 0.5 in case of imitaion
+        self.target_learning_rate = cfg.target_learning_rate
+        self.use_pcl = cfg.use_pcl
+        self.use_iql = cfg.use_iql
 
     @property
     def pad_idx(self):
@@ -140,11 +144,33 @@ class ActorCriticCriterion(FairseqCriterion):
         del hypos
         return num_hypos, num_samples, rewards, vinputs, vtargets
 
-    def _get_critic_loss(self, value, vtargets, shape, rewards, without_residual_loss, do_not_clone):
+    def _get_critic_loss(self, value, target_values, vtargets, shape, rewards, step_reward, without_residual_loss, do_not_clone, update_num):
         #value = model.vf(out_features.detach()) if self.detach_actor else model.vf(out_features)
         cur_v_star = torch.logsumexp(value, dim=2, keepdim=True).view(*shape)
         cur_q = torch.gather(value, 2, vtargets[:, :, None]).view(*shape)
+        cur_q_target = torch.gather(target_values, 2, vtargets[:, :, None]).view(*shape).detach()
+        next_q_target = torch.nn.functional.pad(cur_q_target, [0, 1])[:, :, 1:]
+        residual = cur_q - step_reward - next_q_target
 
+        if self.use_pcl:
+            # Path Consistent Learning
+            log_pi = cur_q - cur_v_star
+            cur_v_target = torch.logsumexp(target_values, dim=2, keepdim=True).view(*shape).detach()
+            next_v_target = torch.nn.functional.pad(cur_v_target, [0, 1])[:, :, 1:]
+            step_pcl_loss = (-cur_v_target + next_v_target + step_reward - log_pi) ** 2
+            cum_log_pi = log_pi + torch.sum(log_pi, dim=2, keepdims=True) - torch.cumsum(log_pi, dim=2)
+            traj_pcl_loss = ((-cur_v_target + rewards - cum_log_pi)) ** 2
+
+            critic_loss =(step_pcl_loss + traj_pcl_loss)
+            critic_loss = critic_loss +  self.alpha * (cur_v_star - cur_q) 
+            return critic_loss, None
+
+        if self.use_iql:
+            critic_loss = 0.5 * residual.pow(2) * torch.abs(self.tau - torch.less(residual, 0).float())
+            if not do_not_clone:
+                critic_loss = critic_loss +  self.alpha * (cur_v_star - cur_q)
+            return critic_loss, None
+        """
         if not self.learn_imitate:
             residual = rewards - cur_q
         else:
@@ -152,17 +178,15 @@ class ActorCriticCriterion(FairseqCriterion):
             residual = cur_q - next_v_star
             if without_residual_loss:
                 residual = residual * 0.
-
-        critic_loss = 0.5 * residual.pow(2) * torch.abs(self.tau - torch.less(residual, 0).float())
-        if not do_not_clone:
-            critic_loss = critic_loss + self.alpha * (cur_v_star - cur_q)
+        """
+        max_q, _ = torch.max(value, dim=2, keepdim=True)
+        max_q = max_q.view(*shape)
+        critic_loss = 0.5 * (rewards - cur_q).pow(2) * torch.abs(self.tau - torch.less(rewards - cur_q, 0).float())
+        if update_num < 5000:
+            critic_loss += self.alpha * (cur_v_star - cur_q)
+        else:
+            critic_loss += self.alpha * (cur_v_star - cur_q) * torch.exp((cur_q - max_q)).detach()
         return critic_loss, cur_q - cur_v_star
-    def _get_clone_loss(self, model, sample):
-        orig_output = model(**sample["net_input"])
-        orig_lprobs = model.get_normalized_probs(orig_output, log_probs=True)
-        orig_lprobs = orig_lprobs.view(-1, orig_lprobs.size(-1))
-        target = model.get_targets(sample, orig_output).view(-1)
-        return F.nll_loss(orig_lprobs, target, ignore_index=self.pad_idx)
 
     """
     def _get_actor_loss(self, model, out_features, vtargets, shape, rewards, subtract_mean=True):
@@ -182,12 +206,7 @@ class ActorCriticCriterion(FairseqCriterion):
         batch_tokens = non_pad_mask.sum() / shape[1]
         return non_pad_mask, batch_tokens
 
-    def forward(self, model, sample, reduce=True, do_not_clone=False, reward_scaler=None, without_residual_loss=False):
-        assert not (self.learn_imitate and not self.use_clone_loss)
-        if reward_scaler is None:
-            reward_scaler = self.reward_scaler
-        else:
-            reward_scaler = self.reward_scaler * reward_scaler
+    def forward(self, model, sample, update_num=0, reduce=True, do_not_clone=False, without_residual_loss=False):
 
         num_hypos, num_samples, rewards, vinputs, vtargets = self.get_batch(model, sample)
 
@@ -196,9 +215,12 @@ class ActorCriticCriterion(FairseqCriterion):
 
         if not torch.is_tensor(rewards):
             rewards = torch.Tensor(rewards).cuda()
-        rewards = rewards.view(*shape) / reward_scaler
+        rewards = rewards.view(*shape) / self.reward_scaler
         
         values = model(**vinputs)[0]
+        target_values = self.task.target_net(**vinputs)[0]
+
+        step_reward = (non_pad_mask.float() - torch.nn.functional.pad(non_pad_mask.float(), [0, 1])[:, :, 1:]) * rewards
 
         if self.use_reinforce:
             policy_loss = self._get_actor_loss(model, out_features, vtargets, shape, rewards)
@@ -209,20 +231,20 @@ class ActorCriticCriterion(FairseqCriterion):
             avg_rl_loss = self._average_loss(policy_loss, non_pad_mask, batch_tokens)
             avg_rl_loss += self._average_loss(critic_loss, non_pad_mask, batch_tokens)
         else:
-            critic_loss, _ = self._get_critic_loss(values, vtargets, shape, rewards, without_residual_loss, do_not_clone)
+            critic_loss, _ = self._get_critic_loss(
+                values, target_values, vtargets, shape, rewards, step_reward, without_residual_loss, do_not_clone, update_num)
             avg_rl_loss = self._average_loss(critic_loss, non_pad_mask, batch_tokens)
 
-        avg_clone_loss = self._get_clone_loss(model, sample)
-        
-        if not self.use_clone_loss or do_not_clone:
-            avg_clone_loss = avg_clone_loss * 0
-
-        #avg_tot_loss = avg_rl_loss + avg_clone_loss
         avg_tot_loss = avg_rl_loss
+        for param, target_param in zip(
+            model.parameters(), self.task.target_net.parameters()):
+            target_param.data.copy_(
+                (1 - self.target_learning_rate) * target_param + 
+                self.target_learning_rate * param
+                )
 
         logging_output = {
             'loss': utils.item(avg_tot_loss.data),
-            #'clone_loss': utils.item(avg_clone_loss.data),
             'rl_loss': utils.item(avg_rl_loss.data),
             'ntokens': batch_tokens,
         }
@@ -234,10 +256,8 @@ class ActorCriticCriterion(FairseqCriterion):
         """Aggregate logging outputs from data parallel training."""
         ntokens = sum(log.get("ntokens", 0) for log in logging_outputs)
         loss = sum(log.get("loss", 0) for log in logging_outputs)
-        clone_loss = sum(log.get("clone_loss", 0) for log in logging_outputs)
         rl_loss = sum(log.get("rl_loss", 0) for log in logging_outputs)
         metrics.log_scalar("loss", loss, ntokens)
-        metrics.log_scalar("clone_loss", clone_loss, ntokens)
         metrics.log_scalar("rl_loss", rl_loss, ntokens)
         
     @staticmethod

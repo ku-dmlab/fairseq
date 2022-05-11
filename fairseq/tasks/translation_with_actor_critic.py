@@ -38,7 +38,6 @@ class TranslationWithActorCriticConfig(TranslationConfig):
     use_critic_generator: bool = field(default=False)
     critic_mix_ratio: float = field(default=0.5)
     decoder_embed_d: int = field(default=512)
-    normalize_value: bool = field(default=False)
     subtract_value: bool = field(default=False)
 
 
@@ -48,17 +47,24 @@ class TranslationWithActorCritic(TranslationTask):
     def __init__(self, cfg, src_dict, tgt_dict):
         super().__init__(cfg, src_dict, tgt_dict)
         self.base_model = None
-        if cfg.base_model_path:
-            state = load_checkpoint_to_cpu(cfg.base_model_path)
+        self.cfg = cfg
+
+    def build_model(self, cfg):
+        model = super().build_model(cfg)
+        if self.cfg.use_critic_generator:
+            state = load_checkpoint_to_cpu(self.cfg.base_model_path)
             if "args" in state and state["args"] is not None:
                 base_cfg = convert_namespace_to_omegaconf(state["args"])
             elif "cfg" in state and state["cfg"] is not None:
                 base_cfg = state["cfg"]
-            if cfg.use_critic_generator:
+            if self.cfg.use_critic_generator:
                 self.base_model = FairseqTask.build_model(self, base_cfg.model)
                 self.base_model.load_state_dict(state["model"], model_cfg=base_cfg.model)
                 self.base_model.cuda()
-        self.cfg = cfg
+        self.target_net = FairseqTask.build_model(self, cfg).cuda()
+        self.target_net.eval()
+        self.target_net.load_state_dict(model.state_dict())
+        return model
 
     def train_step(
         self, sample, model, criterion, optimizer, update_num, ignore_grad=False
@@ -67,7 +73,7 @@ class TranslationWithActorCritic(TranslationTask):
         model.set_num_updates(update_num)
         with torch.autograd.profiler.record_function("forward"):
             with torch.cuda.amp.autocast(enabled=(isinstance(optimizer, AMPOptimizer))):
-                loss, sample_size, logging_output = criterion(model, sample)
+                loss, sample_size, logging_output = criterion(model, sample, update_num)
         if ignore_grad:
             loss *= 0
         with torch.autograd.profiler.record_function("backward"):
@@ -87,7 +93,6 @@ class TranslationWithActorCritic(TranslationTask):
                 extra_gen_cls_kwargs = {}
             extra_gen_cls_kwargs["vf"] = models
             extra_gen_cls_kwargs["critic_mix_ratio"] = self.cfg.critic_mix_ratio
-            extra_gen_cls_kwargs["normalize_value"] = self.cfg.normalize_value
             extra_gen_cls_kwargs["subtract_value"] = self.cfg.subtract_value
             return super().build_generator(base_models, args, CriticSequenceGenerator, extra_gen_cls_kwargs, prefix_allowed_tokens_fn)
         else:

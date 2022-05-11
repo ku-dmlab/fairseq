@@ -20,12 +20,10 @@ class CriticSequenceGenerator(SequenceGenerator):
     def __init__(self, *args, **kwargs):
         vf = kwargs.pop("vf")
         critic_mix_ratio = kwargs.pop("critic_mix_ratio")
-        normalize_value = kwargs.pop("normalize_value")
         subtract_value = kwargs.pop("subtract_value")
         super().__init__(*args, **kwargs)
         self.vf = EnsembleModel(vf)
         self.critic_mix_ratio = critic_mix_ratio
-        self.normalize_value = normalize_value
         self.subtract_value = subtract_value
 
     def _generate(
@@ -197,9 +195,8 @@ class CriticSequenceGenerator(SequenceGenerator):
                 tokens[:, : step + 1],
                 encoder_out=vf_encoder_outs[0],
                 incremental_state=vf_incremental_states[0])
-            values = values[:, -1] 
-            if self.normalize_value:
-                values = torch.log_softmax(values/ self.temperature, dim=-1)
+            values = values[:, -1]
+            values = torch.log_softmax(values/ self.temperature, dim=-1)
             """
             values, _ = self.vf.forward_decoder(
                 tokens[:, : step + 1],
