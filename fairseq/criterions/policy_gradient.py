@@ -17,19 +17,15 @@ from fairseq.data.data_utils import collate_tokens
 @dataclass
 class PolicyGradientCriterionConfig(FairseqDataclass):
     sample_beam: int = field(default=5, metadata={"help": "number of sample size"})
-    use_sample_based_baseline: bool = field(default=False)
-    use_beam_while_training: bool = field(default=False)
 
 
 @register_criterion(
     "policy_gradient", dataclass=PolicyGradientCriterionConfig
 )
 class PolicyGradientCriterion(FairseqCriterion):
-    def __init__(self, task, sample_beam, use_sample_based_baseline, use_beam_while_training):
+    def __init__(self, task, sample_beam):
         super().__init__(task)
         self.sample_beam = sample_beam
-        self.use_sample_based_baseline = use_sample_based_baseline
-        self.use_beam_while_training = use_beam_while_training
         self.generator = None
 
     def _decode(self, toks, escape_unk=False):
@@ -46,15 +42,12 @@ class PolicyGradientCriterion(FairseqCriterion):
         if self.generator is None:
             gen_args = Namespace(**json.loads(self.task.cfg.eval_bleu_args))
             gen_args.sample_beam = self.sample_beam
-            if not self.use_beam_while_training:
-                gen_args.sampling = True
-                gen_args.sampling_topp = 0.5
+            gen_args.sampling = True
+            gen_args.sampling_topp = 0.5
             self.generator = self.task.build_generator([model], gen_args)
 
-        model.eval()
         with torch.no_grad():
             hypos = self.generator.generate([model], sample)
-        model.train()
 
         rewards = []
         pad_idx = self.task.tgt_dict.pad()
@@ -86,25 +79,35 @@ class PolicyGradientCriterion(FairseqCriterion):
         vinputs["prev_output_tokens"] = collate_tokens(
             hypos, pad_idx, eos_idx, left_pad=self.task.cfg.left_pad_target,
             move_eos_to_beginning=True)
+        del hypos
 
         net_output = model(**vinputs)
+        del vinputs
         lprobs = model.get_normalized_probs(net_output, log_probs=True)
-        lprob = -lprobs.gather(dim=-1, index=vtargets[:, :, None])
+        lprob = lprobs.gather(dim=-1, index=vtargets[:, :, None]).view(num_hypos, num_samples, -1)
         non_pad_mask = vtargets.ne(pad_idx).view(num_hypos, num_samples, -1)
-        rewards = lprob.new_tensor(rewards).view(num_hypos, num_samples, 1)
-        if self.use_sample_based_baseline:
-            adv = rewards - rewards.mean(1, keepdim=True)
-            loss = (lprob.view(num_hypos, num_samples, -1) * adv)[non_pad_mask]
-        else:
-            loss = (lprob.view(num_hypos, num_samples, -1) * rewards)[non_pad_mask]
+        rewards = lprob.new_tensor(rewards).view(num_hypos, num_samples, 1) / 100
+        del vtargets
+
+        adv = rewards - rewards.mean(1, keepdim=True)
+        loss = - (lprob * adv.detach())[non_pad_mask]
+
         batch_tokens = loss.size(0) / num_samples
         avg_rl_loss = torch.sum(loss) / batch_tokens
+
+        gt_net_output = model(**sample["net_input"])
+        lprobs = model.get_normalized_probs(gt_net_output, log_probs=True)
+        lprobs = lprobs.view(-1, lprobs.size(-1))
+        target = model.get_targets(sample, net_output).view(-1)
+        clone_loss = torch.nn.functional.nll_loss(lprobs, target, ignore_index=pad_idx)        
+        avg_rl_loss += clone_loss
 
         logging_output = {
             'loss': utils.item(avg_rl_loss.data),
             'sample_bleu': utils.item(torch.mean(rewards).data),
             'ntokens': batch_tokens,
         }
+        del rewards
         return avg_rl_loss, batch_tokens, logging_output
 
     @classmethod

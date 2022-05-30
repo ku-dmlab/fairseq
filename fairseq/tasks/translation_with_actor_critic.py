@@ -38,7 +38,7 @@ class TranslationWithActorCriticConfig(TranslationConfig):
     use_critic_generator: bool = field(default=False)
     critic_mix_ratio: float = field(default=0.5)
     decoder_embed_d: int = field(default=512)
-    subtract_value: bool = field(default=False)
+    subtract_max: bool = field(default=False)
 
 
 @register_task("translation_with_actor_critic", dataclass=TranslationWithActorCriticConfig)
@@ -93,7 +93,7 @@ class TranslationWithActorCritic(TranslationTask):
                 extra_gen_cls_kwargs = {}
             extra_gen_cls_kwargs["vf"] = models
             extra_gen_cls_kwargs["critic_mix_ratio"] = self.cfg.critic_mix_ratio
-            extra_gen_cls_kwargs["subtract_value"] = self.cfg.subtract_value
+            extra_gen_cls_kwargs["subtract_max"] = self.cfg.subtract_max
             return super().build_generator(base_models, args, CriticSequenceGenerator, extra_gen_cls_kwargs, prefix_allowed_tokens_fn)
         else:
             return super().build_generator(models, args, seq_gen_cls, extra_gen_cls_kwargs, prefix_allowed_tokens_fn)

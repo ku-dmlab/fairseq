@@ -41,7 +41,6 @@ class Experiment():
         "--maximize-best-checkpoint-metric"]
     BASE_TEST_ARGS = [
         "--batch-size", "128",
-        "--beam", "5",
         "--remove-bpe"
     ]
 
@@ -90,19 +89,19 @@ class Experiment():
             "--path", path]
         return [self.data_path] + self.BASE_TEST_ARGS + dep_args + self.test_args
 
-    def run(self, try_different_ratio=False):
+    def run(self, try_different_ratio=False, try_different_beam=False):
         # subprocess call is requried to train multiple models without interference
         # "python" can be changed according to the machine's python settings
         train_path = os.path.join(str(pathlib.Path().resolve()), "fairseq_cli", "train.py")
         if not self.test_only:
             subprocess.call([PYTHON_PATH, train_path] + self.get_train_args(), env=os.environ)
 
-        def test(critic_mixt_ratio=None):
+        def test(critic_mixt_ratio=None, beam=5):
             test_path = os.path.join(str(pathlib.Path().resolve()), "fairseq_cli", "generate.py")
             os.makedirs(os.path.dirname(self.sample_dir), exist_ok=True)
-            add_arg = []
+            add_arg = ["--beam", str(beam)]
             if critic_mixt_ratio is not None:
-                add_arg = ["--critic-mix-ratio", str(critic_mixt_ratio)]
+                add_arg = add_arg + ["--critic-mix-ratio", str(critic_mixt_ratio)]
             with open(self.sample_dir, 'w') as f:
                 subprocess.call([PYTHON_PATH, test_path] + self.get_test_args() + add_arg, env=os.environ, stdout=f)
             with open(self.sample_dir, "r") as f:
@@ -110,7 +109,15 @@ class Experiment():
             return score
         
         if not try_different_ratio:
-            return {self.exp_id: test()}
+            return {self.exp_id + "_1": test(beam=1), self.exp_id + "_5": test(beam=5), self.exp_id + "_10": test(beam=10)}
+        elif try_different_beam:
+            ret_dict = {}
+            ret_dict[f"{self.exp_id}_1"] = test(1000.0, beam=1)
+            for ratio in [1000.0, 5.0, 2.0, 1.0, 0.5, 0.25, 0.01]:
+                for beam in [5, 10]:
+                    ret_dict[f"{self.exp_id}_{ratio}_{beam}"] = test(ratio, beam=beam)
+            return ret_dict
+
         else:
             ret_dict = {}
             for ratio in [1000.0, 5.0, 2.0, 1.0, 0.5, 0.25, 0.01]:
@@ -187,13 +194,6 @@ def run_imitate(i):
     with open(res_file, "wb") as f:
         pickle.dump(all_scores, f)
 
-def run_baseline_wmt(i, dict):
-    id = "baseline_wmt"
-    train_args = ["--lr", "5e-4", "--criterion", "label_smoothed_cross_entropy",
-        "--label-smoothing", "0.1", "--max-epoch", "40"]
-    exp = Experiment(id, i, train_args=train_args, data_path="data-bin/wmt17.en-de")
-    dict.update(exp.run())
-
 def run_su_adapt_all(i):
     all_scores = {}
     #run_baseline_wmt(i, all_scores)
@@ -201,18 +201,58 @@ def run_su_adapt_all(i):
     # alpha search
     # tau search
     # reward scale search
-    alpha = {100:0.1, 101:1.0, 102:10.0, 103:100.0}
-    alpha = {100:0.0, 101:0.5, 102:1.0, 103:2.0}
-    tau = {100:0.95, 101:0.97, 102:0.99, 103:0.999}
     
     def save_scores(ind):
-        res_file = os.path.join(RESULTS_DIR, f"result_su_adapt_{i}_{ind}.pkl")
+        res_file = os.path.join(RESULTS_DIR, f"result_cr1_{i}_{ind}.pkl")
         with open(res_file, "wb") as f:
             pickle.dump(all_scores, f)
 
     #run_offline(i, all_scores, model="baseline_wmt", offline_data="su_adapt", alpha=1.0, tau=0.99, critic_mix_ratio=1000)
-    run_offline(i, all_scores, model="baseline", alpha=1.0, tau=0.99, critic_mix_ratio=1000, adapt=False, do_not_restore=True)
+    #run_offline(i, all_scores, model="su_adapt", offline_data="su_adapt", alpha=1.0, tau=0.99, critic_mix_ratio=1000, test_only=True, force_id="offline_real_final_1_baseline_wmt_su_adapt_alpha_1.0_tau_0.99_normalize_advantage_reward-scaler_100")
 
+    #run_offline(i, all_scores, model="baseline", alpha=1.0, tau=0.99, critic_mix_ratio=1000, adapt=False, do_not_restore=True)
+    #run_offline(i, all_scores, model="baseline", alpha=1.0, tau=0.99, critic_mix_ratio=1000, adapt=False, test_only=True, force_id="offline_real_final_baseline_adapt_False_alpha_1.0_tau_0.99")
+    
+    #run_offline(i, all_scores, model="baseline_wmt", offline_data="su_adapt", critic_mix_ratio=1000, use_pcl=True, test_only=True)
+    #run_offline(i, all_scores, model="su_adapt", offline_data="su_adapt", alpha=1.0, tau=0.99, critic_mix_ratio=1000, test_only=True, use_pcl=True, force_id="offline_alpha_baseline_wmt_adapt_Truesu_adapt_pcl")
+    
+    #run_offline(i, all_scores, model="baseline", offline_data="su_adapt", critic_mix_ratio=1000, use_pcl=True, adapt=False, do_not_restore=True)
+    #run_offline(i, all_scores, model="baseline", alpha=1.0, tau=0.99, critic_mix_ratio=1000, adapt=False, test_only=True, use_pcl=True, force_id="offline_alpha_baseline_adapt_False_pcl")
+
+    #run_offline(i, all_scores, model="baseline_wmt", offline_data="su_adapt", alpha=1.0, tau=0.99, critic_mix_ratio=1000, use_full=True)
+    #run_offline(i, all_scores, model="su_adapt", offline_data="su_adapt", alpha=1.0, tau=0.99, critic_mix_ratio=1000, test_only=True, use_full=True, force_id="offline_alpha_baseline_wmt_adapt_Truesu_adapt_alpha_1.0_tau_0.99_full")
+
+    #run_offline(i, all_scores, model="baseline", alpha=1.0, tau=0.99, critic_mix_ratio=1000, adapt=False, do_not_restore=True, use_full=True)
+    #run_offline(i, all_scores, model="baseline", alpha=1.0, tau=0.99, critic_mix_ratio=1000, adapt=False, test_only=True, use_full=True, force_id="offline_alpha_baseline_adapt_False_alpha_1.0_tau_0.99_full")
+    
+    #run_reinforce(i, all_scores, model="baseline", adapt=False, test_only=True)
+    #run_reinforce_test(i, all_scores, model="baseline", adapt=False, force_id="reinforce")
+    #run_reinforce(i, all_scores, model="su_adapt", adapt=True)
+    #run_reinforce_test(i, all_scores, model="su_adapt", adapt=True)
+    
+    #run_baseline_with_offline(i, all_scores, test_only=True)
+    #run_baseline(i, all_scores, test_only=True)
+    #su_adapt_with_offline(i, all_scores, test_only=True)
+    #run_supervised_adaptation(i, all_scores, test_only=True)
+    #run_baseline_wmt(i, all_scores, test_only=True, data_path="data-bin/wmt17.en-de.iwslt")
+    
+    alpha = {100:0.0, 101:0.1, 102:1.0, 103:10.0}
+    alpha2 = {100:0.3, 101:3.0, 102:30.0, 103:100.0}
+    save_scores(-1)
+    run_offline(100, all_scores, model="baseline", adapt=False, alpha=alpha[i], tau=0.99, critic_mix_ratio=1000)
+    print(all_scores)
+    save_scores(0)
+    run_offline(100, all_scores, model="baseline", adapt=False, alpha=alpha2[i], tau=0.99, critic_mix_ratio=1000)
+    print(all_scores)
+    save_scores(1)
+    tau = {100:0.9, 101:0.95, 102:0.97, 103:0.999}
+    tau2 = {100:0.5, 101:0.6, 102:0.7, 103:0.8}
+    run_offline(100, all_scores, model="baseline", adapt=False, alpha=1.0, tau=tau[i], critic_mix_ratio=1000)
+    print(all_scores)
+    save_scores(2)
+    run_offline(100, all_scores, model="baseline", adapt=False, alpha=1.0, tau=tau2[i], critic_mix_ratio=1000)
+    print(all_scores)
+    save_scores(3)
 
     # save results
     print(all_scores)
@@ -231,27 +271,51 @@ def run_offline_adapt_all(i):
     with open(res_file, "wb") as f:
         pickle.dump(all_scores, f)
 
-def run_baseline(i, dict):
+def run_baseline(i, dict, test_only=False):
     id = "baseline"
-    train_args = ["--lr", "5e-4", "--criterion", "label_smoothed_cross_entropy_post_edit",
-        "--label-smoothing", "0.1", "--use-base-for-train", "--max-epoch", "40"]
-    exp = Experiment(id, i, train_args=train_args)
+    train_args = ["--lr", "5e-4", "--criterion", "label_smoothed_cross_entropy",
+        "--label-smoothing", "0.1", "--max-epoch", "80"]
+    exp = Experiment(id, i, train_args=train_args, test_only=test_only)
     dict.update(exp.run())
 
-def run_supervised_adaptation(i, dict, use_wmt=False):
+def run_baseline_wmt(i, dict, test_only=False, data_path="data-bin/wmt17.en-de"):
+    id = "baseline_wmt"
+    train_args = ["--lr", "5e-4", "--criterion", "label_smoothed_cross_entropy",
+        "--label-smoothing", "0.1", "--max-epoch", "40"]
+    exp = Experiment(id, i, train_args=train_args, data_path=data_path, test_only=test_only)
+    dict.update(exp.run())
+
+def run_baseline_with_offline(i, dict, test_only=False):
+    id = "baseline_with_offline"
+    train_args = ["--lr", "5e-4", "--criterion", "label_smoothed_cross_entropy",
+        "--label-smoothing", "0.1", "--max-epoch", "80"]
+    data_path = f"data-bin/iwslt14.tokenized.en-de:data-bin/iwslt14.tokenized.offline.{i}.en-de"
+    exp = Experiment(id, i, train_args=train_args, data_path=data_path, test_only=test_only)
+    dict.update(exp.run())
+
+def su_adapt_with_offline(i, dict, test_only=False):
+    id = "baseline_wmt_with_offline"
+    train_args = ["--lr", "5e-4", "--criterion", "label_smoothed_cross_entropy",
+        "--label-smoothing", "0.1", "--max-epoch", "80"]
+    data_path = f"data-bin/wmt17.en-de.iwslt:data-bin/wmt17.iwslt.offline_su_adapt.{i}.en-de"
+    exp = Experiment(id, i, train_args=train_args, data_path=data_path, test_only=test_only)
+    dict.update(exp.run())
+
+
+def run_supervised_adaptation(i, dict, use_offline=False, test_only=True):
     base_model_path = os.path.join(BASE_DIR, "baseline_wmt", str(i), "checkpoint_best.pt")
     id = "su_adapt"
     train_args = ["--lr", "5e-4", "--criterion", "label_smoothed_cross_entropy",
         "--label-smoothing", "0.1"]
     data_path = "data-bin/wmt17.en-de.iwslt"
-    if use_wmt:
-        data_path = "data-bin/wmt17.en-de.iwslt:data-bin/wmt17.en-de"
+    if use_offline:
+        data_path = f"data-bin/wmt17.en-de.iwslt:data-bin/wmt17.iwslt.offline_su_adapt.{i}.en-de"
         id += "_wmt"
-    exp = Experiment(id, i, train_args=train_args, data_path=data_path, base_model_path=base_model_path)
+    exp = Experiment(id, i, train_args=train_args, data_path=data_path, base_model_path=base_model_path, test_only=test_only)
     dict.update(exp.run())
 
 def run_offline(i, dict, model="baseline_wmt", offline_data="baseline_wmt", alpha=None, tau=None, critic_mix_ratio=1000, use_pcl=False, 
-            use_iql=False, test_only=False, adapt=True, do_not_restore=False):
+            use_iql=False, test_only=False, adapt=True, do_not_restore=False, use_full=False, force_id=None, subtract_max=False):
     base_model_path = os.path.join(BASE_DIR, model, str(i), "checkpoint_best.pt")
     TASK = "translation_with_actor_critic_offline"
 
@@ -261,12 +325,12 @@ def run_offline(i, dict, model="baseline_wmt", offline_data="baseline_wmt", alph
     # datasets = ",".join(datasets)
     datasets = f"data-bin/wmt17.iwslt.offline_{offline_data}.{i}.en-de" if adapt else f"data-bin/iwslt14.tokenized.offline.{i}.en-de"
     
-    id = f"offline_real_final_{model}_adapt_{adapt}"
+    id = f"offline_hyp_alpha_{model}_adapt_{adapt}"
     if adapt:
         id += offline_data
 
     train_args = ["--lr", "5e-4", "--criterion", "actor_critic_offline", "--reset-optimizer", "--use-critic-generator",
-                  "--offline-data", datasets, "--max-epoch", "150", "--use-beam-while-training", "--critic-mix-ratio", str(critic_mix_ratio)]
+                  "--offline-data", datasets, "--max-epoch", "63", "--use-beam-while-training", "--critic-mix-ratio", str(critic_mix_ratio)]
     test_args = ["--use-critic-generator"]
 
     if use_pcl:
@@ -281,6 +345,14 @@ def run_offline(i, dict, model="baseline_wmt", offline_data="baseline_wmt", alph
     if tau is not None:
         train_args.extend(["--tau", str(tau)])
         id += f"_tau_{tau}"
+    if use_full:
+        train_args.append("--use-full")
+        id += f"_full"
+
+    if force_id is not None:
+        id = force_id
+    if subtract_max:
+        test_args.append("--subtract-max")
 
     data_path = "data-bin/wmt17.en-de.iwslt" if adapt else"data-bin/iwslt14.tokenized.en-de"
     exp = Experiment(id, i, train_args=train_args, test_args=test_args, task=TASK, base_model_path=base_model_path,
@@ -288,16 +360,30 @@ def run_offline(i, dict, model="baseline_wmt", offline_data="baseline_wmt", alph
     dict.update(exp.run(try_different_ratio=True))
 
 
-def run_reinforce_online(i, dict, use_beam_while_training=False):
-    base_model_path = os.path.join(BASE_DIR, "baseline", str(i), "checkpoint_best.pt")
+def run_reinforce(i, dict, model="baseline", test_only=False, adapt=False):
+    base_model_path = os.path.join(BASE_DIR, model, str(i), "checkpoint_last.pt")
     
-    id = "reinforce_online"
-    train_args = ["--lr", "5e-5", "--criterion", "actor_critic_post_edit", "--use-reinforce", "--reset-optimizer"]
-    if use_beam_while_training:
-        train_args.append("--use-beam-while-training")
-        id += "_beam"
+    id = f"reinforce_{model}_adapt_{adapt}"
+    train_args = ["--lr", "5e-5", "--criterion", "policy_gradient", "--reset-optimizer", "--max-update", "25000", "--fp16"]
+    if adapt:
+        train_args.extend(["--sample-beam", "3"])
+    data_path = "data-bin/wmt17.en-de.iwslt" if adapt else"data-bin/iwslt14.tokenized.en-de"
+    exp = Experiment(id, i, train_args=train_args, base_model_path=base_model_path, data_path=data_path, test_only=test_only, max_tokens=2048)
+    dict.update(exp.run())
+
+def run_reinforce_test(i, dict, model="baseline", adapt=False, force_id=None):
+    base_model_path = os.path.join(BASE_DIR, model, str(i), "checkpoint_last.pt")
     
-    exp = Experiment(id, i, train_args=train_args, task=AC_TASK, base_model_path=base_model_path, max_tokens=2048)
+    id = f"reinforce_{model}_adapt_{adapt}"
+    train_args = ["--lr", "5e-5", "--criterion", "policy_gradient", "--reset-optimizer", "--max-update", "25000", "--fp16"]
+    if adapt:
+        train_args.extend(["--sample-beam", "3"])
+    data_path = "data-bin/wmt17.en-de.iwslt" if adapt else"data-bin/iwslt14.tokenized.en-de"
+    if force_id is not None:
+        id = force_id
+    test_args = ["--use-critic-generator"]
+
+    exp = Experiment(id, i, train_args=train_args, test_args=test_args, task="translation_with_actor_critic", base_model_path=base_model_path, data_path=data_path, test_only=True, max_tokens=2048)
     dict.update(exp.run())
 
 def run_ours_online(i, dict, use_beam_while_training=True, alpha=None, tau=None):
@@ -364,5 +450,6 @@ def run_ours_imitate(i, dict, use_beam_while_training=True, alpha=None):
 
 
 if __name__ == "__main__":
+    sys.argv.append("1")
     os.environ["CUDA_VISIBLE_DEVICES"] = sys.argv[1]
     run_su_adapt_all(100 + int(sys.argv[1]))

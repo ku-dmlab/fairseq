@@ -20,11 +20,11 @@ class CriticSequenceGenerator(SequenceGenerator):
     def __init__(self, *args, **kwargs):
         vf = kwargs.pop("vf")
         critic_mix_ratio = kwargs.pop("critic_mix_ratio")
-        subtract_value = kwargs.pop("subtract_value")
+        subtract_max = kwargs.pop("subtract_max")
         super().__init__(*args, **kwargs)
         self.vf = EnsembleModel(vf)
         self.critic_mix_ratio = critic_mix_ratio
-        self.subtract_value = subtract_value
+        self.subtract_max = subtract_max
 
     def _generate(
         self,
@@ -196,7 +196,10 @@ class CriticSequenceGenerator(SequenceGenerator):
                 encoder_out=vf_encoder_outs[0],
                 incremental_state=vf_incremental_states[0])
             values = values[:, -1]
-            values = torch.log_softmax(values/ self.temperature, dim=-1)
+            if self.subtract_max:
+                values = values - values.max(dim=-1, keepdims=True).values
+            else:
+                values = torch.log_softmax(values/ self.temperature, dim=-1)
             """
             values, _ = self.vf.forward_decoder(
                 tokens[:, : step + 1],
@@ -275,9 +278,6 @@ class CriticSequenceGenerator(SequenceGenerator):
                 tokens[:, : step + 1],
                 original_batch_idxs,
             )
-            if self.subtract_value:
-                cand_values = torch.gather(values.view(bsz, -1), 1, cand_indices + cand_beams * values.shape[1])
-                cand_scores = cand_scores - cand_values
 
             # cand_bbsz_idx contains beam indices for the top candidate
             # hypotheses, with a range of values: [0, bsz*beam_size),

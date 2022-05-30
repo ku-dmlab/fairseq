@@ -1,4 +1,5 @@
 
+from email.headerregistry import UniqueDateHeader
 import json
 from argparse import Namespace
 from dataclasses import dataclass, field
@@ -26,6 +27,7 @@ class ActorCriticCriterionConfig(FairseqDataclass):
     target_learning_rate: float = field(default=0.001)
     use_pcl: bool = field(default=False)
     use_iql: bool = field(default=False)
+    use_full: bool = field(default=False)
 
 @register_criterion(
     "actor_critic", dataclass=ActorCriticCriterionConfig
@@ -48,6 +50,7 @@ class ActorCriticCriterion(FairseqCriterion):
         self.target_learning_rate = cfg.target_learning_rate
         self.use_pcl = cfg.use_pcl
         self.use_iql = cfg.use_iql
+        self.use_full = cfg.use_full
 
     @property
     def pad_idx(self):
@@ -75,16 +78,11 @@ class ActorCriticCriterion(FairseqCriterion):
         gen_args.sample_beam = self.sample_beam
         if not self.use_beam_while_training:
             gen_args.sampling = True
-            gen_args.sampling_topp = 0.5
         self.generator = self.task.build_generator([model], gen_args)
 
     def _run_generator(self, model, base_sample):
-        was_train = model.training
-        model.eval()
         with torch.no_grad():
             hypos = self.generator.generate([model], base_sample)
-        if was_train:
-            model.train()
         return hypos
     
     def _get_rewards(self, hypos, targets):
@@ -148,11 +146,11 @@ class ActorCriticCriterion(FairseqCriterion):
         #value = model.vf(out_features.detach()) if self.detach_actor else model.vf(out_features)
         cur_v_star = torch.logsumexp(value, dim=2, keepdim=True).view(*shape)
         cur_q = torch.gather(value, 2, vtargets[:, :, None]).view(*shape)
-        cur_q_target = torch.gather(target_values, 2, vtargets[:, :, None]).view(*shape).detach()
-        next_q_target = torch.nn.functional.pad(cur_q_target, [0, 1])[:, :, 1:]
-        residual = cur_q - step_reward - next_q_target
 
         if self.use_pcl:
+            cur_q_target = torch.gather(target_values, 2, vtargets[:, :, None]).view(*shape).detach()
+            next_q_target = torch.nn.functional.pad(cur_q_target, [0, 1])[:, :, 1:]
+            residual = cur_q - step_reward - next_q_target
             # Path Consistent Learning
             log_pi = cur_q - cur_v_star
             cur_v_target = torch.logsumexp(target_values, dim=2, keepdim=True).view(*shape).detach()
@@ -161,11 +159,15 @@ class ActorCriticCriterion(FairseqCriterion):
             cum_log_pi = log_pi + torch.sum(log_pi, dim=2, keepdims=True) - torch.cumsum(log_pi, dim=2)
             traj_pcl_loss = ((-cur_v_target + rewards - cum_log_pi)) ** 2
 
-            critic_loss =(step_pcl_loss + traj_pcl_loss)
-            critic_loss = critic_loss +  self.alpha * (cur_v_star - cur_q) 
+            if update_num < 5000:
+                return cur_v_star - cur_q, None
+            critic_loss = step_pcl_loss + traj_pcl_loss
             return critic_loss, None
 
         if self.use_iql:
+            cur_q_target = torch.gather(target_values, 2, vtargets[:, :, None]).view(*shape).detach()
+            next_q_target = torch.nn.functional.pad(cur_q_target, [0, 1])[:, :, 1:]
+            residual = cur_q - step_reward - next_q_target
             critic_loss = 0.5 * residual.pow(2) * torch.abs(self.tau - torch.less(residual, 0).float())
             if not do_not_clone:
                 critic_loss = critic_loss +  self.alpha * (cur_v_star - cur_q)
@@ -182,22 +184,20 @@ class ActorCriticCriterion(FairseqCriterion):
         max_q, _ = torch.max(value, dim=2, keepdim=True)
         max_q = max_q.view(*shape)
         critic_loss = 0.5 * (rewards - cur_q).pow(2) * torch.abs(self.tau - torch.less(rewards - cur_q, 0).float())
-        if update_num < 5000:
+        if update_num < 5000 or self.use_full:
             critic_loss += self.alpha * (cur_v_star - cur_q)
         else:
             critic_loss += self.alpha * (cur_v_star - cur_q) * torch.exp((cur_q - max_q)).detach()
         return critic_loss, cur_q - cur_v_star
 
-    """
-    def _get_actor_loss(self, model, out_features, vtargets, shape, rewards, subtract_mean=True):
-        net_output = [model.output_layer(out_features)]
-        lprobs = model.get_normalized_probs(net_output, log_probs=True)
-        score = lprobs.gather(dim=-1, index=vtargets[:, :, None]).view(*shape)
+
+    def _get_actor_loss(self, value, vtargets, shape, rewards, subtract_mean=True):
+        cur_v_star = torch.logsumexp(value, dim=2, keepdim=True).view(*shape)
+        cur_q = torch.gather(value, 2, vtargets[:, :, None]).view(*shape)
         if subtract_mean:
             rewards = rewards - rewards.mean(1, keepdim=True)
-        del lprobs
-        return - (score * rewards.detach())
-    """
+        return (cur_v_star - cur_q) * rewards.detach()
+
     def _average_loss(self, loss, non_pad_mask, batch_tokens):
         return torch.sum(loss[non_pad_mask]) / batch_tokens
 
@@ -218,12 +218,15 @@ class ActorCriticCriterion(FairseqCriterion):
         rewards = rewards.view(*shape) / self.reward_scaler
         
         values = model(**vinputs)[0]
-        target_values = self.task.target_net(**vinputs)[0]
+        if self.use_iql or self.use_pcl:
+            target_values = self.task.target_net(**vinputs)[0]
+        else:
+            target_values = None
 
         step_reward = (non_pad_mask.float() - torch.nn.functional.pad(non_pad_mask.float(), [0, 1])[:, :, 1:]) * rewards
 
         if self.use_reinforce:
-            policy_loss = self._get_actor_loss(model, out_features, vtargets, shape, rewards)
+            policy_loss = self._get_actor_loss(values, vtargets, shape, rewards)
             avg_rl_loss = self._average_loss(policy_loss, non_pad_mask, batch_tokens)
         elif self.use_ac:
             critic_loss, cur_q = self._get_critic_loss(model, out_features, vtargets, shape, rewards, without_residual_loss)
