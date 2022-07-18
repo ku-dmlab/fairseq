@@ -28,6 +28,9 @@ class ActorCriticCriterionConfig(FairseqDataclass):
     use_pcl: bool = field(default=False)
     use_iql: bool = field(default=False)
     use_full: bool = field(default=False)
+    use_bc: bool = field(default=False)
+    use_gold_reward: bool = field(default=False)
+    use_reward_weighted: bool = field(default=False)
 
 @register_criterion(
     "actor_critic", dataclass=ActorCriticCriterionConfig
@@ -51,6 +54,9 @@ class ActorCriticCriterion(FairseqCriterion):
         self.use_pcl = cfg.use_pcl
         self.use_iql = cfg.use_iql
         self.use_full = cfg.use_full
+        self.use_bc = cfg.use_bc
+        self.use_gold_reward = cfg.use_gold_reward
+        self.use_reward_weighted = cfg.use_reward_weighted
 
     @property
     def pad_idx(self):
@@ -107,7 +113,15 @@ class ActorCriticCriterion(FairseqCriterion):
             # validtion: we do not produce additional samples for validation.
             target = base_sample["target"]
             #gt_rewards = [[100]] * len(target) = self._get_rewards(target, target)
-            rewards = base_sample.get("score", [[100]] * len(target))
+            if self.use_gold_reward:
+                net_output = self.task.base_model(**base_sample["net_input"])
+                lprobs = self.task.base_model.get_normalized_probs(net_output, log_probs=True)
+                lprobs = torch.clamp(lprobs, -2.3)
+                lprobs = torch.gather(lprobs, 2, target[:, :, None])
+                reverse_cumsum = lprobs + torch.sum(lprobs, dim=1, keepdims=True) - torch.cumsum(lprobs, dim=1)
+                rewards = reverse_cumsum.squeeze(-1) / torch.arange(lprobs.shape[-2], 0, -1).cuda() + 3.3
+            else:
+                rewards = base_sample.get("score", [[100]] * len(target))
             return len(target), 1, rewards, base_sample["net_input"], target
         with torch.no_grad():
             if self.generator is None:
@@ -159,10 +173,8 @@ class ActorCriticCriterion(FairseqCriterion):
             cum_log_pi = log_pi + torch.sum(log_pi, dim=2, keepdims=True) - torch.cumsum(log_pi, dim=2)
             traj_pcl_loss = ((-cur_v_target + rewards - cum_log_pi)) ** 2
 
-            if update_num < 5000:
-                return cur_v_star - cur_q, None
             critic_loss = step_pcl_loss + traj_pcl_loss
-            return critic_loss, None
+            return step_pcl_loss, traj_pcl_loss
 
         if self.use_iql:
             cur_q_target = torch.gather(target_values, 2, vtargets[:, :, None]).view(*shape).detach()
@@ -184,19 +196,26 @@ class ActorCriticCriterion(FairseqCriterion):
         max_q, _ = torch.max(value, dim=2, keepdim=True)
         max_q = max_q.view(*shape)
         critic_loss = 0.5 * (rewards - cur_q).pow(2) * torch.abs(self.tau - torch.less(rewards - cur_q, 0).float())
+
+        
         if update_num < 5000 or self.use_full:
-            critic_loss += self.alpha * (cur_v_star - cur_q)
+            reg = self.alpha * (cur_v_star - cur_q)
         else:
-            critic_loss += self.alpha * (cur_v_star - cur_q) * torch.exp((cur_q - max_q)).detach()
-        return critic_loss, cur_q - cur_v_star
+            reg = self.alpha * (cur_v_star - cur_q) * torch.exp((cur_q - max_q)).detach()
+        if self.use_reward_weighted:
+            reg = reg * rewards
+        return critic_loss, reg
 
 
-    def _get_actor_loss(self, value, vtargets, shape, rewards, subtract_mean=True):
+    def _get_actor_loss(self, value, vtargets, shape, rewards, subtract_mean=False):
         cur_v_star = torch.logsumexp(value, dim=2, keepdim=True).view(*shape)
         cur_q = torch.gather(value, 2, vtargets[:, :, None]).view(*shape)
         if subtract_mean:
             rewards = rewards - rewards.mean(1, keepdim=True)
-        return (cur_v_star - cur_q) * rewards.detach()
+        if self.use_bc:
+            return cur_v_star - cur_q
+        iw = torch.clamp(torch.exp((cur_q - cur_v_star)).detach(), min=0.1)
+        return (cur_v_star - cur_q) * (rewards.detach() / 100) * iw
 
     def _average_loss(self, loss, non_pad_mask, batch_tokens):
         return torch.sum(loss[non_pad_mask]) / batch_tokens
@@ -215,7 +234,10 @@ class ActorCriticCriterion(FairseqCriterion):
 
         if not torch.is_tensor(rewards):
             rewards = torch.Tensor(rewards).cuda()
-        rewards = rewards.view(*shape) / self.reward_scaler
+        rewards = rewards.view(*shape)
+        if not self.use_gold_reward:
+            rewards = rewards / self.reward_scaler
+        step_reward = (non_pad_mask.float() - torch.nn.functional.pad(non_pad_mask.float(), [0, 1])[:, :, 1:]) * rewards
         
         values = model(**vinputs)[0]
         if self.use_iql or self.use_pcl:
@@ -223,8 +245,7 @@ class ActorCriticCriterion(FairseqCriterion):
         else:
             target_values = None
 
-        step_reward = (non_pad_mask.float() - torch.nn.functional.pad(non_pad_mask.float(), [0, 1])[:, :, 1:]) * rewards
-
+        avg_reg_loss = torch.Tensor([0.0]).cuda()
         if self.use_reinforce:
             policy_loss = self._get_actor_loss(values, vtargets, shape, rewards)
             avg_rl_loss = self._average_loss(policy_loss, non_pad_mask, batch_tokens)
@@ -234,11 +255,12 @@ class ActorCriticCriterion(FairseqCriterion):
             avg_rl_loss = self._average_loss(policy_loss, non_pad_mask, batch_tokens)
             avg_rl_loss += self._average_loss(critic_loss, non_pad_mask, batch_tokens)
         else:
-            critic_loss, _ = self._get_critic_loss(
+            critic_loss, reg_loss = self._get_critic_loss(
                 values, target_values, vtargets, shape, rewards, step_reward, without_residual_loss, do_not_clone, update_num)
             avg_rl_loss = self._average_loss(critic_loss, non_pad_mask, batch_tokens)
+            avg_reg_loss = self._average_loss(reg_loss, non_pad_mask, batch_tokens)
 
-        avg_tot_loss = avg_rl_loss
+        avg_tot_loss = avg_rl_loss + avg_reg_loss
         for param, target_param in zip(
             model.parameters(), self.task.target_net.parameters()):
             target_param.data.copy_(
@@ -249,6 +271,7 @@ class ActorCriticCriterion(FairseqCriterion):
         logging_output = {
             'loss': utils.item(avg_tot_loss.data),
             'rl_loss': utils.item(avg_rl_loss.data),
+            'reg_loss': utils.item(avg_reg_loss.data),
             'ntokens': batch_tokens,
         }
         del vtargets, vinputs, rewards
@@ -260,8 +283,10 @@ class ActorCriticCriterion(FairseqCriterion):
         ntokens = sum(log.get("ntokens", 0) for log in logging_outputs)
         loss = sum(log.get("loss", 0) for log in logging_outputs)
         rl_loss = sum(log.get("rl_loss", 0) for log in logging_outputs)
+        reg_loss = sum(log.get("reg_loss", 0) for log in logging_outputs)
         metrics.log_scalar("loss", loss, ntokens)
         metrics.log_scalar("rl_loss", rl_loss, ntokens)
+        metrics.log_scalar("reg_loss", reg_loss, ntokens)
         
     @staticmethod
     def logging_outputs_can_be_summed() -> bool:

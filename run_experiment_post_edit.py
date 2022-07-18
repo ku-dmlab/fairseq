@@ -61,8 +61,9 @@ class Experiment():
 
         self.train_args += ["--max-tokens", str(max_tokens)]
         if base_model_path is None:
-            self.train_args += ["--patience", "3"]
+            self.train_args += []#["--patience", "3"]
         else:
+            self.train_args += ["--validate-interval-updates", "4000"]#, "--patience", "80"]
             #self.train_args += ["--patience", "60", "--validate-interval-updates", "300"]
             if not do_not_restore:
                 self.train_args += ["--restore-file", base_model_path]
@@ -120,7 +121,7 @@ class Experiment():
 
         else:
             ret_dict = {}
-            for ratio in [1000.0, 5.0, 2.0, 1.0, 0.5, 0.25, 0.01]:
+            for ratio in [5.0, 2.0, 1.0, 0.5]:#[1000.0, 5.0, 2.0, 1.0, 0.5, 0.25, 0.01]:
                 ret_dict[f"{self.exp_id}_{ratio}"] = test(ratio)
             return ret_dict
 
@@ -236,23 +237,75 @@ def run_su_adapt_all(i):
     #run_supervised_adaptation(i, all_scores, test_only=True)
     #run_baseline_wmt(i, all_scores, test_only=True, data_path="data-bin/wmt17.en-de.iwslt")
     
-    alpha = {100:0.0, 101:0.1, 102:1.0, 103:10.0}
-    alpha2 = {100:0.3, 101:3.0, 102:30.0, 103:100.0}
-    save_scores(-1)
-    run_offline(100, all_scores, model="baseline", adapt=False, alpha=alpha[i], tau=0.99, critic_mix_ratio=1000)
-    print(all_scores)
-    save_scores(0)
-    run_offline(100, all_scores, model="baseline", adapt=False, alpha=alpha2[i], tau=0.99, critic_mix_ratio=1000)
-    print(all_scores)
-    save_scores(1)
-    tau = {100:0.9, 101:0.95, 102:0.97, 103:0.999}
-    tau2 = {100:0.5, 101:0.6, 102:0.7, 103:0.8}
-    run_offline(100, all_scores, model="baseline", adapt=False, alpha=1.0, tau=tau[i], critic_mix_ratio=1000)
-    print(all_scores)
-    save_scores(2)
-    run_offline(100, all_scores, model="baseline", adapt=False, alpha=1.0, tau=tau2[i], critic_mix_ratio=1000)
-    print(all_scores)
-    save_scores(3)
+    # alpha = {100:0.0, 101:0.1, 102:1.0, 103:10.0}
+    # alpha2 = {100:0.3, 101:3.0, 102:30.0, 103:100.0}
+    # save_scores(-1)
+    # run_offline(100, all_scores, model="baseline", adapt=False, alpha=alpha[i], tau=0.99, critic_mix_ratio=1000)
+    # print(all_scores)
+    # save_scores(0)
+    # run_offline(100, all_scores, model="baseline", adapt=False, alpha=alpha2[i], tau=0.99, critic_mix_ratio=1000)
+    # print(all_scores)
+    # save_scores(1)
+    # tau = {100:0.9, 101:0.95, 102:0.97, 103:0.999}
+    # tau2 = {100:0.5, 101:0.6, 102:0.7, 103:0.8}
+    # run_offline(100, all_scores, model="baseline", adapt=False, alpha=1.0, tau=tau[i], critic_mix_ratio=1000)
+    # print(all_scores)
+    # save_scores(2)
+    # run_offline(100, all_scores, model="baseline", adapt=False, alpha=1.0, tau=tau2[i], critic_mix_ratio=1000)
+    # print(all_scores)
+    # save_scores(3)
+    # run_baseline(i, all_scores)
+    # run_baseline_continued(i, all_scores)
+    #run_reinforce_is(i, all_scores, model="baseline_80", adapt=False, max_epoch=320)
+    #run_reinforce_is(i, all_scores, model="baseline_80", adapt=False, max_epoch=320, use_full=True)
+    #run_reinforce_is(i, all_scores, model="baseline_80", adapt=False, use_reinforce=True)
+    #run_reinforce_is(i, all_scores, model="baseline_80", adapt=False, use_reinforce=True, use_bc=True, max_epoch=320)
+    #run_baseline_wmt(i, all_scores)
+    #run_offline_only(i, all_scores, model="baseline_40", max_epoch=320, use_reinforce=True)
+    #run_offline_only(i, all_scores, model="baseline_40", max_epoch=320, alpha=1.0, tau=0.999, use_gold_reward=True, test_only=True)
+    
+    #run_offline_only(i, all_scores, model="baseline_wmt", max_epoch=320, alpha=1.0, tau=0.999, adapt=True, use_reinforce=True, test_only=True)
+    # 13.79, 14.46, 14.28, 13.93 -> 14.115
+    #run_offline_only(i, all_scores, model="baseline_wmt", max_epoch=320, alpha=1.0, tau=0.999, adapt=True, test_only=True)
+    # 13.86, 14.12, 13.82, 13.63
+    #run_offline_only(i, all_scores, model="baseline_wmt", max_epoch=320, alpha=100, tau=0.999, adapt=True, use_reward_weighted=True, test_only=True)
+    # 14.19, 14.28, 14.01, 13.85 -> 14.0825
+    rs = {100:30, 101:10, 102:3, 103:1}
+    #run_offline_only(100, all_scores, model="baseline_wmt", max_epoch=320, alpha=1.0, tau=0.999, adapt=True, use_pcl=True, reward_scaler=rs[i])
+
+    #run_offline_only(i, all_scores, model="baseline_wmt", max_epoch=45, alpha=1.0, tau=0.999, adapt=True, use_reinforce=True, use_bc=True, num=6)
+    #run_offline_only(i, all_scores, model="baseline_wmt", max_epoch=45, alpha=1.0, tau=0.999, adapt=True, use_reinforce=True, test_only=True, num=6)
+    #run_offline_only(i, all_scores, model="baseline_wmt", max_epoch=45, alpha=1.0, tau=0.999, adapt=True, test_only=True, num=6)
+    #run_offline_only(i, all_scores, model="baseline_wmt", max_epoch=45, alpha=100, tau=0.999, adapt=True, use_reward_weighted=True, test_only=True, num=6)
+    #run_offline_only(i, all_scores, model="baseline_wmt", max_epoch=45, alpha=1.0, tau=0.999, adapt=True, use_pcl=True, reward_scaler=1)
+
+    #run_baseline_half(i, all_scores, max_epoch=40, portion=0.5) #translation_portion
+    #run_baseline(i, all_scores, max_epoch=100)
+
+    #for num in [12, 13, 14, 15]:
+        #run_offline_only(i, all_scores, model="baseline_40_0.5", max_epoch=50, use_reinforce=True, use_bc=True, num=num, test_only=True, no_ensemble=True)
+        #run_offline_only(i, all_scores, model="baseline_40_0.5", max_epoch=50, alpha=100, tau=0.999, num=num)
+        #run_offline_only(i, all_scores, model="baseline_40_0.5", max_epoch=50, use_reinforce=True, num=num, test_only=True, no_ensemble=True)
+        #run_offline_only(i, all_scores, model="baseline_40_0.5", max_epoch=50, alpha=100, tau=0.999, use_reward_weighted=True, num=num)
+    run_offline_only(i, all_scores, model="baseline_40_0.5", max_epoch=50, use_reinforce=True, num=16, no_ensemble=True, test_only=True)
+    #run_offline_only(i, all_scores, model="baseline_40_0.5", max_epoch=50, alpha=100, tau=0.999, use_reward_weighted=True, num=16)
+    run_offline_only(i, all_scores, model="baseline_40_0.5", max_epoch=50, use_reinforce=True, use_bc=True, num=16, no_ensemble=True, test_only=True)
+    #run_offline_only(i, all_scores, model="baseline_40_0.5", max_epoch=50, alpha=100, tau=0.999, num=16)
+    run_offline_only(i, all_scores, model="baseline_wmt", max_epoch=50, use_reinforce=True, num=16, adapt=True, no_ensemble=True, test_only=True)
+    # run_offline_only(i, all_scores, model="baseline_wmt", max_epoch=50, alpha=100, tau=0.999, use_reward_weighted=True, num=16, adapt=True)
+    run_offline_only(i, all_scores, model="baseline_wmt", max_epoch=50, use_reinforce=True, use_bc=True, num=16, adapt=True, no_ensemble=True, test_only=True)
+    # run_offline_only(i, all_scores, model="baseline_wmt", max_epoch=50, alpha=100, tau=0.999, num=16, adapt=True)
+
+    #run_baseline_wmt(i, all_scores, test_only=True, data_path="data-bin/wmt17.en-de.iwslt")
+    #for num in [6, 7, 8, 9]:
+    #    run_offline_only(i, all_scores, model="baseline_wmt", max_epoch=45, alpha=1.0, tau=0.999, adapt=True, use_reinforce=True, use_bc=True, num=num, test_only=True, no_ensemble=True)
+    #    run_offline_only(i, all_scores, model="baseline_wmt", max_epoch=45, alpha=1.0, tau=0.999, adapt=True, use_reinforce=True, test_only=True, num=num, no_ensemble=True)
+
+    # run_baseline(i, all_scores, max_epoch=40)
+    # run_baseline_continued(i, all_scores, max_epoch=80, continue_from=40)
+    # run_reinforce_is(i, all_scores, model="baseline_40", adapt=False, max_epoch=80)
+    # run_reinforce_is(i, all_scores, model="baseline_40", adapt=False, use_reinforce=True, max_epoch=80)
+    # run_reinforce_is(i, all_scores, model="baseline_40", adapt=False, use_reinforce=True, use_bc=True, max_epoch=80)
 
     # save results
     print(all_scores)
@@ -271,10 +324,26 @@ def run_offline_adapt_all(i):
     with open(res_file, "wb") as f:
         pickle.dump(all_scores, f)
 
-def run_baseline(i, dict, test_only=False):
-    id = "baseline"
+def run_baseline_half(i, dict, test_only=False, max_epoch=80, portion=0.5):
+    TASK = "translation_portion"
+    id = f"baseline_{max_epoch}_{portion}"
     train_args = ["--lr", "5e-4", "--criterion", "label_smoothed_cross_entropy",
-        "--label-smoothing", "0.1", "--max-epoch", "80"]
+        "--label-smoothing", "0.1", "--max-epoch", str(max_epoch), "--portion", str(portion)]
+    exp = Experiment(id, i, train_args=train_args, test_only=test_only, task=TASK)
+    dict.update(exp.run())
+
+def run_baseline(i, dict, test_only=False, max_epoch=80):
+    id = f"baseline_{max_epoch}"
+    train_args = ["--lr", "5e-4", "--criterion", "label_smoothed_cross_entropy",
+        "--label-smoothing", "0.1", "--max-epoch", str(max_epoch)]
+    exp = Experiment(id, i, train_args=train_args, test_only=test_only)
+    dict.update(exp.run())
+
+def run_baseline_continued(i, dict, test_only=False, max_epoch=160, continue_from=80):
+    base_model_path = os.path.join(BASE_DIR, f"baseline_{continue_from}", str(i), "checkpoint_best.pt")
+    id = f"baseline_cont_{max_epoch}"
+    train_args = ["--lr", "5e-4", "--criterion", "label_smoothed_cross_entropy",
+        "--label-smoothing", "0.1", "--max-epoch", str(max_epoch), "--restore-file", base_model_path]
     exp = Experiment(id, i, train_args=train_args, test_only=test_only)
     dict.update(exp.run())
 
@@ -359,6 +428,76 @@ def run_offline(i, dict, model="baseline_wmt", offline_data="baseline_wmt", alph
                      data_path=data_path, test_only=test_only, do_not_restore=do_not_restore)
     dict.update(exp.run(try_different_ratio=True))
 
+def run_offline_only(i, dict, model="baseline", test_only=False, adapt=False, use_reinforce=False, use_bc=False, max_epoch=160, use_full=False, alpha=None, tau=None, use_gold_reward=False, use_reward_weighted=False, use_pcl=False, reward_scaler=None, num=9, no_ensemble=False):
+    base_model_path = os.path.join(BASE_DIR, model, str(i), "checkpoint_last.pt")
+    TASK = "translation_with_actor_critic_offline"
+    noises = {9:5, 8:3, 7:1, 6:0, 10:10, 11:15, 12:"0_1", 13:"0_2", 14:"0_3", 15:"0_4"}
+    if num == 16:
+        datasets = f"data-bin/wmt17.iwslt.mss_baseline_wmt_best_5_50_0_0.{i}.en-de" if adapt else f"data-bin/iwslt.mss_baseline_40_0.5_best_5_50_0_0.{i}.en-de"
+    else:
+        datasets = f"data-bin/wmt17.iwslt.good_baseline_wmt_best_5_50_{noises[num]}.{i}.en-de" if adapt else f"data-bin/iwslt.good_baseline_40_0.5_best_5_50_{noises[num]}.{i}.en-de"
+   
+    id = f"offline_only_{num}_{model}_{max_epoch}_use_bc_{use_bc}_use_reinforce_{use_reinforce}_adapt_{adapt}"
+
+    train_args = ["--lr", "1e-4", "--criterion", "actor_critic_offline", "--reset-optimizer", "--use-critic-generator",
+                  "--offline-data", datasets, "--max-epoch", str(max_epoch), "--offline-only", "--use-beam-while-training", "--critic-mix-ratio", str(1.0)]
+    if no_ensemble:
+        test_args = []
+    else:
+        test_args = ["--use-critic-generator"]
+
+    if alpha is not None:
+        train_args.extend(["--alpha", str(alpha)])
+        id += f"_alpha_{alpha}"
+    if tau is not None:
+        train_args.extend(["--tau", str(tau)])
+        id += f"_tau_{tau}"
+    
+    if use_pcl:
+        train_args.append("--use-pcl")
+        id += f"_pcl"
+    if use_reinforce:
+        train_args.append("--use-reinforce")
+    if use_bc:
+        train_args.append("--use-bc")
+    if use_full:
+        train_args.append("--use-full")
+        id += f"_full"
+    if use_gold_reward:
+        train_args.append("--use-gold-reward")
+        id += f"_gold"
+    if use_reward_weighted:
+        train_args.append("--use-reward-weighted")
+        id += f"_reward_weighted"
+    if reward_scaler is not None:
+        train_args.extend(["--reward-scaler", str(reward_scaler)])
+        id += f"_rs_{reward_scaler}"
+
+    data_path = "data-bin/wmt17.en-de.iwslt" if adapt else"data-bin/iwslt14.tokenized.en-de"
+    exp = Experiment(id, i, train_args=train_args, test_args=test_args, base_model_path=base_model_path, task=TASK, data_path=data_path, test_only=test_only)
+    dict.update(exp.run(try_different_ratio=not no_ensemble))
+
+def run_reinforce_is(i, dict, model="baseline", offline_data="baseline_wmt", test_only=False, adapt=False, use_reinforce=False, use_bc=False, max_epoch=160, use_full=False):
+    base_model_path = os.path.join(BASE_DIR, model, str(i), "checkpoint_last.pt")
+    TASK = "translation_with_actor_critic_offline"
+    datasets = f"data-bin/wmt17.iwslt.offline_{offline_data}.{i}.en-de" if adapt else f"data-bin/iwslt14.tokenized.offline.{i}.en-de"
+    
+    id = f"reinforce_is_{model}_{max_epoch}_adapt_{adapt}_use_bc_{use_bc}_use_reinforce_{use_reinforce}"
+    if adapt:
+        id += offline_data
+
+    train_args = ["--lr", "5e-4", "--criterion", "actor_critic_offline", "--reset-optimizer",
+                  "--offline-data", datasets, "--max-epoch", str(max_epoch)]
+    if use_reinforce:
+        train_args.append("--use-reinforce")
+    if use_bc:
+        train_args.append("--use-bc")
+    if use_full:
+        train_args.append("--use-full")
+        id += f"_full"
+    data_path = "data-bin/wmt17.en-de.iwslt" if adapt else"data-bin/iwslt14.tokenized.en-de"
+    exp = Experiment(id, i, train_args=train_args, base_model_path=base_model_path, task=TASK, data_path=data_path, test_only=test_only)
+    dict.update(exp.run())
 
 def run_reinforce(i, dict, model="baseline", test_only=False, adapt=False):
     base_model_path = os.path.join(BASE_DIR, model, str(i), "checkpoint_last.pt")

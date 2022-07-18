@@ -50,7 +50,6 @@ class TranslationWithActorCritic(TranslationTask):
         self.cfg = cfg
 
     def build_model(self, cfg):
-        model = super().build_model(cfg)
         if self.cfg.use_critic_generator:
             state = load_checkpoint_to_cpu(self.cfg.base_model_path)
             if "args" in state and state["args"] is not None:
@@ -61,6 +60,7 @@ class TranslationWithActorCritic(TranslationTask):
                 self.base_model = FairseqTask.build_model(self, base_cfg.model)
                 self.base_model.load_state_dict(state["model"], model_cfg=base_cfg.model)
                 self.base_model.cuda()
+        model = super().build_model(cfg)
         self.target_net = FairseqTask.build_model(self, cfg).cuda()
         self.target_net.eval()
         self.target_net.load_state_dict(model.state_dict())

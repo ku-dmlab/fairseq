@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class TranslationWithActorCriticOfflineConfig(TranslationWithActorCriticConfig):
     offline_data: str = field(default="")
+    offline_only: bool = field(default=False)
 
 @register_task("translation_with_actor_critic_offline", dataclass=TranslationWithActorCriticOfflineConfig)
 class TranslationWithActorCriticOffline(TranslationWithActorCritic):
@@ -26,6 +27,7 @@ class TranslationWithActorCriticOffline(TranslationWithActorCritic):
     def __init__(self, cfg, src_dict, tgt_dict):
         super().__init__(cfg, src_dict, tgt_dict)
         self.offline_data = cfg.offline_data
+        self.offline_only = cfg.offline_only
         if "," in self.offline_data:
             self.offline_data = self.offline_data.split(',')
 
@@ -64,13 +66,15 @@ class TranslationWithActorCriticOffline(TranslationWithActorCritic):
             )
             
         if split == "train":
-            base_dataset = get_langpair_dataset(self.cfg.data)
             offline_dataset = get_langpair_dataset(self.cfg.offline_data)
             offline_dataset = ScoredLanguagePairDataset(
                 offline_dataset, os.path.join(self.cfg.offline_data, "score.npy"))
-
-            self.datasets[split] = RoundRobinZipDatasets(
-                OrderedDict(base=base_dataset, offline=offline_dataset))
+            if self.offline_only:
+                self.datasets[split] = offline_dataset
+            else:
+                base_dataset = get_langpair_dataset(self.cfg.data)
+                self.datasets[split] = RoundRobinZipDatasets(
+                    OrderedDict(base=base_dataset, offline=offline_dataset))
         else:
             self.datasets[split] = get_langpair_dataset(self.cfg.data)
         # if split == "train":
