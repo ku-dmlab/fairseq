@@ -186,6 +186,16 @@ class SequenceGenerator(nn.Module):
         """
         return self._generate(sample, **kwargs)
 
+    def _get_lprobs(self, token, encoder_outs, incremental_states):
+        with torch.autograd.profiler.record_function("EnsembleModel: forward_decoder"):
+            lprobs, avg_attn_scores = self.model.forward_decoder(
+                token,
+                encoder_outs,
+                incremental_states,
+                self.temperature,
+            )
+        return lprobs, avg_attn_scores
+
     def _generate(
         self,
         sample: Dict[str, Dict[str, Tensor]],
@@ -328,13 +338,9 @@ class SequenceGenerator(nn.Module):
                 encoder_outs = self.model.reorder_encoder_out(
                     encoder_outs, reorder_state
                 )
-            with torch.autograd.profiler.record_function("EnsembleModel: forward_decoder"):
-                lprobs, avg_attn_scores = self.model.forward_decoder(
-                    tokens[:, : step + 1],
+            lprobs, avg_attn_scores = self._get_lprobs(tokens[:, : step + 1],
                     encoder_outs,
-                    incremental_states,
-                    self.temperature,
-                )
+                    incremental_states)
 
             if self.lm_model is not None:
                 lm_out = self.lm_model(tokens[:, : step + 1])

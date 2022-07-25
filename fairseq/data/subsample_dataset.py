@@ -28,6 +28,9 @@ class SubsampleDataset(BaseWrapperDataset):
         self.indices = np.random.choice(
             list(range(len(self.dataset))), self.actual_size, replace=False
         )
+        sorter = np.argsort(self.indices)
+        self.inverse_indices = lambda x: sorter[np.searchsorted(self.indices, x, sorter=sorter)]
+
         self.shuffle = shuffle
         logger.info(
             "subsampled dataset from {} to {} (ratio={})".format(
@@ -36,7 +39,7 @@ class SubsampleDataset(BaseWrapperDataset):
         )
 
     def __getitem__(self, index):
-        return self.dataset[self.indices[index]]
+        return self.dataset[index]
 
     def __len__(self):
         return self.actual_size
@@ -53,20 +56,31 @@ class SubsampleDataset(BaseWrapperDataset):
         return self.dataset.name
 
     def num_tokens(self, index):
-        return self.dataset.num_tokens(self.indices[index])
+        return self.dataset.num_tokens(index)
 
     def size(self, index):
-        return self.dataset.size(self.indices[index])
+        return self.dataset.size(index)
 
     def ordered_indices(self):
         """Return an ordered list of indices. Batches will be constructed based
         on this order."""
         if self.shuffle:
-            order = [np.random.permutation(len(self))]
+            indices = np.random.permutation(len(self)).astype(np.int64)
         else:
-            order = [np.arange(len(self))]
-        order.append(self.sizes)
-        return np.lexsort(order)
+            indices = np.arange(len(self), dtype=np.int64)
+        if self.dataset.buckets is None:
+            # sort by target length, then source length
+            if self.dataset.tgt_sizes is not None:
+                tgt_sizes = self.dataset.tgt_sizes[self.indices]
+                indices = indices[np.argsort(tgt_sizes[indices], kind="mergesort")]
+            src_sizes = self.dataset.src_sizes[self.indices]
+            return self.indices[indices[np.argsort(src_sizes[indices], kind="mergesort")]]
+        else:
+            # sort by bucketed_num_tokens, which is:
+            #   max(padded_src_len, padded_tgt_len)
+            return self.indices[indices[
+                np.argsort(self.dataset.bucketed_num_tokens[self.indices][indices], kind="mergesort")
+            ]]
 
     def prefetch(self, indices):
         self.dataset.prefetch(self.indices[indices])
